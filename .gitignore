@@ -1,0 +1,36 @@
+# directories
+
+llama3/
+
+# gemma3/
+gemma3/configs/
+# gemma3/logs/
+gemma3/notebooks/
+gemma3/outputs/
+gemma3/sanskrit_data/
+gemma3/wandb/
+gemma3/src/__pycache__/
+
+# Tokenizers/
+Tokenizers/__pycache__/
+Tokenizers/archive/
+Tokenizers/configs/
+Tokenizers/logs/
+Tokenizers/log_score/
+Tokenizers/logs/
+Tokenizers/vocabularies/
+
+# Log files
+*.log
+
+# Data files (if you don't want to upload large datasets)
+*.csv
+*.json
+
+# Model files (often very large)
+*.pkl
+*.model
+*.weights
+
+# Temporary files
+*.pid

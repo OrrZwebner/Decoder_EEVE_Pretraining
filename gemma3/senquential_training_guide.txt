@@ -1,0 +1,153 @@
+## How to Use Sequential Token Training Script
+
+### Setup Instructions
+
+**Location:** `/home/orrz/gpufs/projects/gemma3/`
+
+
+
+### 2. Make Scripts Executable
+
+
+chmod +x train_multiple_tokens.sh
+chmod +x monitor_training.sh
+chmod +x stop_current_training.sh
+```
+
+### 3. Configure Token Counts
+
+Edit the script to set your desired token counts
+
+
+### 4. Prepare Vocabulary Files
+
+Ensure you have vocabulary folder:
+```bash
+ls /home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/
+```
+
+### 5. Start Training
+
+```bash
+cd /home/orrz/gpufs/projects/gemma3
+bash ./train_multiple_tokens.sh
+```
+
+The script will:
+- Train each token count sequentially (one after another)
+- Automatically update config files
+- Create timestamped logs for each run
+- Save models to organized directories
+
+### 6. Monitor Progress
+
+In a new terminal:
+```bash
+cd /home/orrz/gpufs/projects/gemma3
+bash ./monitor_training.sh
+```
+
+This shows real-time training progress. Press Ctrl+C to stop monitoring (training continues).
+
+### 7. Check Logs
+
+View specific training log:
+```bash
+# List all logs
+ls -la logs/pre_train_1b/sanskrit/
+
+# View latest log
+tail -f logs/pre_train_1b/sanskrit/gemma_sanskrit_spm_bpe_2048_*.log
+
+# Check for errors
+grep -i error logs/pre_train_1b/sanskrit/gemma_sanskrit_spm_bpe_2048_*.log
+```
+
+### 8. Emergency Stop
+
+If you need to stop current training:
+```bash
+bash ./stop_current_training.sh
+```
+
+This stops only the current token count. The script won't continue to the next.
+
+### 9. Check Results
+
+Models are saved in:
+```bash
+ls outputs/eeve_stages/
+# Shows: sentencepiece_bpe_512_15-08-2024_1730/
+#        sentencepiece_bpe_1024_15-08-2024_1830/
+#        sentencepiece_bpe_2048_15-08-2024_2030/
+
+# Each contains stage1-4 with final_model subdirectories
+```
+
+### 10. Resume After Interruption
+
+If the script was interrupted, simply run it again:
+```bash
+./train_multiple_tokens.sh
+```
+
+It will skip already completed token counts and continue from where it stopped.
+
+### Example Full Workflow
+
+```bash
+# 1. Navigate to project
+cd /home/orrz/gpufs/projects/gemma3
+
+# 2. Set token counts (optional)
+nano train_multiple_tokens.sh
+# Edit TOKEN_COUNTS=(256 512 1024)
+
+# 3. Start training
+./train_multiple_tokens.sh
+
+# 4. Monitor in another terminal
+./monitor_training.sh
+
+# 5. Check completion
+ls outputs/eeve_stages/
+```
+
+### Important Notes
+
+- Each token count trains completely before the next starts
+- Training 2048 tokens with 4 EEVE stages takes ~8-12 hours
+- Logs are timestamped: `gemma_sanskrit_spm_bpe_2048_15082024_1730.log`
+- Config is automatically backed up and restored
+- Failed trainings can be skipped (script will ask)
+- GPU 1 is used by default (set in script)
+
+### Troubleshooting
+
+**Script not starting:**
+```bash
+# Check permissions
+ls -la train_multiple_tokens.sh
+# Should show -rwxr-xr-x
+
+# Check if already running
+ps aux | grep train_multiple_tokens
+```
+
+**Training stuck:**
+```bash
+# Check GPU usage
+nvidia-smi
+
+# Check latest log
+tail -100 logs/pre_train_1b/sanskrit/gemma_sanskrit_spm_bpe_*.log
+```
+
+**Out of memory:**
+```bash
+# Kill other GPU processes
+./stop_current_training.sh
+nvidia-smi
+# Kill specific PIDs if needed
+kill -9 [PID]
+```

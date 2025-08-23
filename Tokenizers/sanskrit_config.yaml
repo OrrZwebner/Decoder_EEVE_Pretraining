@@ -1,0 +1,54 @@
+# Sanskrit Tokenizer Comparison Configuration
+
+# Data configuration
+data:
+  path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data" # Path to Sanskrit data directory/file (relative to script location)
+  debug: 0 # number of debug samples to log (0 = use full dataset)
+
+# Logging configuration
+logging:
+  log_dir: "logs/tokenizers"  # Directory for detailed log files
+
+# Model configurations
+models:
+  llama:
+    model_name: "meta-llama/Llama-3.2-1B"
+    algorithms: ["bpe", "unigram", "wordpiece"]
+  
+  gemma:
+    model_name: "google/gemma-3-1b-it"
+    algorithms: ["sentencepiece_bpe", "sentencepiece_unigram"]  # Only BPE and Unigram
+  
+  gpt2:
+    model_name: "openai-community/gpt2-large"
+    algorithms: ["bpe", "unigram", "wordpiece"]  # BPE-based like LLaMA
+
+# Training parameters
+training:
+  # Number of samples to train on
+  # Use null, -1, or number > dataset size for full dataset
+  # Use specific number (e.g., 50000) for sampling
+  num_samples: null  # null = use full dataset
+  
+  # Base vocabulary size for training new tokenizers
+  vocab_size: 200
+  
+  # Number of new tokens to add to existing tokenizers
+  num_new_tokens: 128
+  
+  # Unigram heuristic parameters
+  unigram_max_iterations: 10
+  unigram_tolerance: 0.05  # 5% tolerance for target vocab size
+
+# Output configurations
+output:
+  create_plots: true
+  show_plots: true  # Set to false for nohup runs
+  save_plots: true
+  plot_filename: "sanskrit_tokenizer_comparison.png"
+  
+  # Compression test parameters
+  compression_test_samples: 1000000
+
+# Random seed for reproducibility
+random_seed: 42

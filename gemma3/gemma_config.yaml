@@ -1,0 +1,286 @@
+# Gemma-3 Sanskrit Continual Pretraining Configuration with EEVE Support
+# Location: /home/orrz/gpufs/projects/gemma3/gemma_config.yaml
+# Updated for dictionary-style access matching train.py
+
+# ===== PROJECT PATHS =====
+project:
+  name: "gemma3-sanskrit-pretraining"
+  root_dir: "/home/orrz/gpufs/projects/gemma3"
+  data_dir: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
+  logs_dir: "/home/orrz/gpufs/projects/gemma3/logs"
+  output_dir: "/home/orrz/gpufs/projects/gemma3/outputs/no_stages"  # Default output directory for single-stage training
+# ===== ENVIRONMENT SETTINGS =====
+environment:
+  # cuda_visible_devices: 0  # Use GPU 3 (as specified in your config)
+  # cuda_visible_devices: "1"  # Use GPU 1 (as specified in your config)
+  # cuda_visible_devices: "2"  # Use GPU 1 (as specified in your config)
+  cuda_visible_devices: "3"  # Use GPU 1 (as specified in your config)
+  torch_compile_disable: true
+  pytorch_disable_dynamo: true
+  hf_home: "/home/orrz/gpufs/hf/.cache/huggingface"
+
+
+# ===== AUTHENTICATION CONFIGURATION =====
+authentication:
+  # Use HF API for authentication (improved method)
+  use_hf_api: true
+  # Fallback to file-based token if HF API fails
+  token_path: "/home/orrz/gpufs/hf/.cache/huggingface/token"
+
+# ===== MODEL CONFIGURATION =====
+model:
+  name: "google/gemma-3-1b-it"
+  torch_dtype: "bfloat16"  # Options: float16, bfloat16, float32
+  # torch_dtype: "float16"
+  # torch_dtype: "float32"  # Use bfloat16 for better performance on Ampere GPUs
+  attn_implementation: "eager"  # More memory efficient
+  # attn_implementation: "flash_attention_2"  # Use Flash Attention 2 for better performance
+  use_cache: false  # Critical: incompatible with gradient checkpointing
+  trust_remote_code: true # Allow loading custom model code
+  low_cpu_mem_usage: true # Memory optimization for large models
+  ignore_mismatched_sizes: true # Ignore size mismatches during loading 
+
+# ===== TOKENIZER CONFIGURATION =====
+tokenizer:
+  max_length: 256
+  truncation: true
+  padding: "max_length"
+  add_pad_token: true  # Add pad token if missing
+
+# ===== DATA CONFIGURATION =====
+data:
+  # Data file paths (absolute paths)
+  file_paths:
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.txt"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.json"
+    - "/home/orrz/gpufs/projects/gemma3/train.txt"
+
+  
+  # Train/eval split
+  eval_split_ratio: 0.1
+  random_seed: 42
+  
+  # Fallback data (if no files found)
+  use_fallback: true
+  fallback_multiplier: 10  # Repeat fallback data N times
+
+
+# ===== CUSTOM VOCABULARY CONFIGURATION =====
+vocabulary:
+  # Enable/disable custom vocabulary expansion
+  # - false: Use only original Gemma-3 vocabulary (safe default, no model changes)
+  # - true: Load and add custom tokens from PKL file (expands vocabulary and model)
+  # use_custom_vocabulary: false
+  use_custom_vocabulary: true
+  
+
+  
+  
+  # Token addition method - how to integrate custom tokens with existing vocabulary
+  # - "add": Safely append custom tokens to end of existing vocabulary
+  #          Original vocab (256k) + custom tokens = expanded vocab
+  #          Preserves all original token IDs and model compatibility
+  add_tokens_method: "add"
+  
+  # Resize model embeddings to accommodate new tokens
+  resize_model_embeddings: true
+  
+  # Wether to vecose logging during vocabulary expansion
+  debug_vocabulary: true
+
+  # Vocabulary file name (should be a .pkl file containing list of custom tokens)
+  # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
+  # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
+  # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
+  vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
+
+# ===== TRAINING CONFIGURATION =====
+training:
+  # Basic training settings
+  num_train_epochs: 1
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 16
+  gradient_accumulation_steps: 8  # Effective batch size = 16 * 8 = 128
+  # per_device_train_batch_size: 8  # Reduced for memory efficiency
+  # per_device_eval_batch_size: 8  # Reduced for memory efficiency
+  # gradient_accumulation_steps: 16  # Effective batch size = 16 * 8 = 128
+  
+  
+  # Optimization settings
+  learning_rate: 0.00005  # 5e-5
+  warmup_steps: 50
+  optimizer: "adafactor"  # Options: adamw_torch, adafactor
+  
+  # Memory optimization
+  gradient_checkpointing: true # Enable gradient checkpointing for memory efficiency
+  gradient_checkpointing_kwargs:
+    use_reentrant: false # Use non-reentrant mode for better memory usage 
+  # gradient_checkpointing: false # Disable gradient checkpointing for now
+  
+  # Precision settings (matching RTX 3090 optimization from original)
+  fp16: false
+  # fp16: true  # Enable mixed precision training
+  # bf16: false
+  bf16: true  # Enable bfloat16 for Ampere GPU
+  # fp16_full_eval: true # This flag is only relevant if you are using fp16: true. It tells the trainer to switch back to full 32-bit precision during evaluation steps.
+  fp16_full_eval: false # Disable full precision evaluation for now
+  tf32: true  # Enable TF32 for Ampere GPU. It's independent of bf16/fp16 and should almost always be left true on a 3090.
+  
+  # Memory management
+  dataloader_pin_memory: false # Pin memory for faster data loading
+  remove_unused_columns: true # Remove unused columns from dataset to save memory
+
+# ===== EEVE (EFFICIENT VOCABULARY EXPANSION) CONFIGURATION =====
+eeve:
+  # Enable/disable EEVE multi-stage training
+  # - false: Standard single-stage training
+  # - true: Multi-stage EEVE training (Stages 1-7)
+  enable: false  # Set to true to enable EEVE training 
+  # enable: true  # Set to true to enable EEVE training
+  
+  # EEVE training parameters
+  start_stage: 1  # First stage to train (1-7)
+  end_stage: 4    # Last stage to train (1-7)
+  
+  # Number of added tokens (required for EEVE stages 1-3)
+  # Set this to the actual number of tokens added to vocabulary
+  # n_added_tokens: 2048  # Example from your config
+  
+
+  stages:
+    1:
+      # Stage 1: Train only added tokens embeddings 
+      train_layers: "added_tokens_embeddings"
+      epochs: 2
+      description: "Train added token embeddings only"
+
+    2:
+      # Stage 2: Train all embeddings 
+      train_layers: "embedding"
+      epochs: 1
+      description: "Train entire tied embedding matrix"
+
+    3:
+      # Stage 3: Train full model 
+      train_layers: "all"
+      epochs: 1
+      description: "Train all model parameters"
+
+    4:
+      # Stage 4: Train hidden layers
+      train_layers: "hidden_layers"
+      epochs: 1
+      description: "Train transformer layers only"
+  
+  # Model saving between stages
+  save_intermediate_stages: true
+  stage_output_dir: "/home/orrz/gpufs/projects/gemma3/outputs/eeve_stages"  # Directory for stage checkpoints
+  
+  # Run naming (inspired by your config)
+  run_name: "gemma3_sanskrit_eeve_16"
+  # Examples from your pattern:
+  # run_name: "ru_bpe_2k_7_stages_2.0"
+  # run_name: "sanskrit_custom_tokens_eeve"
+
+# ===== SAVING & EVALUATION =====
+checkpointing:
+  save_strategy: "epoch"  # Options: no, steps, epoch
+  save_steps: null
+  save_total_limit: 0  # 0 = disable saving to save memory
+  eval_strategy: "epoch"  # Options: no, steps, epoch
+  eval_steps: null
+  load_best_model_at_end: false  # Saves memory
+  metric_for_best_model: "loss"
+  greater_is_better: false
+
+# ===== LOGGING CONFIGURATION =====
+logging:
+  # Local logging
+  logging_dir: "logs"
+  logging_steps: 100
+  logging_strategy: "steps"
+  logging_first_step: true
+  logging_nan_inf_filter: true
+  
+  # Wandb configuration
+  use_wandb: true
+  wandb_project: "gemma3-sanskrit-pretraining"
+  wandb_run_name: "gemma3-1b-sanskrit-local"
+  report_to: "wandb"
+
+# ===== HARDWARE OPTIMIZATIONS =====
+hardware:
+  # CUDA optimizations
+  enable_flash_sdp: false
+  # set_float32_matmul_precision: "high"  # Options: highest, high, medium
+  set_float32_matmul_precision: "medium"  # Options: highest, high, medium
+  empty_cache_on_start: true
+  suppress_dynamo_errors: true
+  
+  # Memory monitoring
+  monitor_gpu_memory: true
+  log_memory_usage: true
+
+# ===== DEEPSPEED CONFIGURATION =====
+deepspeed:
+  # enable: true  # Set to false to disable DeepSpeed
+  enable: false  # Set to false to disable DeepSpeed
+  config_file: "/home/orrz/gpufs/projects/gemma3/deepspeed_config.json"
+  # config_file: "/home/orrz/gpufs/projects/gemma3/deepspeed_config.yaml"
+
+
+# ===== COMPATIBILITY FIXES =====
+compatibility:
+  # Accelerate patches
+  apply_accelerate_patch: true
+  
+  # Model loading fixes
+  local_files_only: false
+
+# ===== DEBUGGING & DEVELOPMENT =====
+debug:
+  verbose_logging: true
+  print_model_info: true
+  print_dataset_info: true
+  # test_mode: false  # Set to true for quick testing runs
+  test_mode: true  # Set to true for quick testing runs
+  
+  # Data limiting for quick testing
+  # limit_train_samples: 0  # 0 = no limit, >0 = limit to N samples
+  # limit_eval_samples: 0   # 0 = no limit, >0 = limit to N samples
+
+  limit_train_samples: 128  
+  limit_eval_samples: 32   # Limit eval samples for quick testing
+  
+  # Training overrides for testing
+  # test_epochs: 1          # Override epochs when test_mode is true
+  # test_batch_size: 4      # Override batch size when test_mode is true
+
+
+
+# ===== VOCABULARY GENERATION CONFIGURATION =====
+vocabulary_generation:
+  # Set to true to run the tokenizer script automatically before training starts.
+  enable: true 
+  
+  # The full, absolute path to the tokenizer project's main script.
+  script_path: "/home/orrz/gpufs/projects/Tokenizers/main.py"
+  
+  # Parameters to use when generating the vocabulary.
+  model_target: "gemma"
+  algorithm_target: "sentencepiece_bpe"
+  # algorithm_target: "sentencepiece_unigram"
+  
+  # Data path for the Tokenizers project (should match your Sanskrit data)
+  # This tells the Tokenizers project where to find the Sanskrit training data
+  data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
+  
+  # Number of tokens to generate
+  # num_tokens: 16
+  # num_tokens: 2048
+  num_tokens: 20  # Number of tokens to generate for the vocabulary
+
+  # use_existing_vocabulary: false # Set to true to use existing vocabulary instead of generating a new one
+
+
+  

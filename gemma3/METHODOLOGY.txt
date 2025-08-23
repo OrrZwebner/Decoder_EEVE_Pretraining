@@ -1,0 +1,497 @@
+======================================================================
+                  PROJECT METHODOLOGY SUMMARY
+======================================================================
+
+This document outlines the complete methodology for the Gemma-3 Sanskrit
+continual pretraining project with EEVE (Efficient and Effective Vocabulary
+Expansion) support. The entire process is controlled by GEMMA_CONFIG.YAML
+and executed through a sequential function call chain that integrates both
+the Gemma training pipeline and the external Tokenizers project.
+
+
+*** GENERAL EXECUTION FLOW ***
+
+The project follows this high-level function call sequence:
+
+    Terminal Command
+           ↓
+    train.py::main()
+    │ Purpose: Entry point, loads config, sets environment
+           ↓
+    train.py::create_directories(config)
+    │ Purpose: Creates output, logs, and stage directories
+           ↓
+    train.py::run_vocabulary_generation(config)  [if enabled]
+    │ Purpose: Generates custom Sanskrit vocabulary via Tokenizers project
+           ↓ 
+    ┌─────────── TOKENIZERS PROJECT INTEGRATION ───────────┐
+    │                                                     │
+    │ train.py::create_temporary_sanskrit_config(config)   │
+    │ │ Purpose: Creates temp config for Tokenizers       │
+    │          ↓                                          │
+    │ subprocess: Tokenizers/main.py                      │
+    │ │ Purpose: Executes vocabulary generation script    │
+    │          ↓                                          │
+    │ Tokenizers/main.py::main()                         │
+    │ │ Purpose: Main entry point for tokenizer training │
+    │          ↓                                          │
+    │ Tokenizers/main.py::load_sanskrit_data()           │
+    │ │ Purpose: Loads Sanskrit texts from data path     │
+    │          ↓                                          │
+    │ Tokenizers/tokenizer_trainers.py::train_with_target_size() │
+    │ │ Purpose: Trains tokenizer to get exact N tokens │
+    │          ↓                                          │
+    │ Tokenizers/model_processors.py::get_processor()    │
+    │ │ Purpose: Gets model-specific token processor     │
+    │          ↓                                          │
+    │ Processor::expand_tokenizer()                      │
+    │ │ Purpose: Adds learned tokens to base tokenizer   │
+    │          ↓                                          │
+    │ Tokenizers/main.py::save_vocabulary_to_pickle()    │
+    │ │ Purpose: Saves processed tokens as .pkl file     │
+    │                                                     │
+    └─────────────────────────────────────────────────────┘
+           ↓
+    Decision Point: config['eeve']['enable']?
+           ↓                    ↓
+    [FALSE]                 [TRUE]
+           ↓                    ↓
+    run_standard_training()  run_eeve_training()
+    │ Purpose: Single-stage  │ Purpose: Multi-stage
+    │ model training         │ progressive training
+           ↓                    ↓
+    load_model_pipeline()    LOOP: for each stage
+    │ Purpose: Load model     │       ↓
+    │ and tokenizer          load_model_pipeline()
+           ↓                 │ Purpose: Load/reload model
+    load_data_pipeline()     │ for current stage
+    │ Purpose: Load and      │       ↓
+    │ preprocess data        freeze_layers()
+           ↓                 │ Purpose: Freeze params
+    train_single_stage()     │ based on stage config
+    │ Purpose: Execute       │       ↓
+    │ training loop          load_data_pipeline()
+           ↓                 │ Purpose: Load training data
+    SAVE MODEL              │       ↓
+                            train_single_stage()
+                            │ Purpose: Train current stage
+                            │       ↓
+                            SAVE STAGE CHECKPOINT
+                            │       ↓
+                            [REPEAT OR END]
+
+
+*** DETAILED FUNCTION-BY-FUNCTION BREAKDOWN ***
+
+=== INITIALIZATION PHASE ===
+
+1. TERMINAL INVOCATION:
+   Command: python /home/orrz/gpufs/projects/gemma3/src/train.py
+
+2. train.py::main()
+   │ Purpose: Main entry point, orchestrates entire training pipeline
+   ├── Loads GEMMA_CONFIG.YAML (before torch import)
+   ├── Sets environment variables (CUDA_VISIBLE_DEVICES, etc.)
+   ├── Calls create_directories(config)
+   ├── Calls run_vocabulary_generation(config) [if enabled]
+   └── Decision: config['eeve']['enable']?
+
+3. train.py::create_directories(config)
+   │ Purpose: Creates all necessary output directories for training
+   ├── Creates project['output_dir']
+   ├── Creates project['logs_dir']
+   └── Creates eeve['stage_output_dir'] [if EEVE enabled]
+
+4. train.py::run_vocabulary_generation(config) [OPTIONAL]
+   │ Purpose: Orchestrates custom vocabulary generation process
+   ├── Calls create_temporary_sanskrit_config(config)
+   ├── Subprocess call to /projects/Tokenizers/main.py
+   ├── Generates custom Sanskrit tokens (.pkl file)
+   └── Cleans up temporary config
+
+5. train.py::create_temporary_sanskrit_config(config)
+   │ Purpose: Creates Tokenizers-compatible config from Gemma config
+   ├── Maps Gemma config fields to Tokenizers format
+   ├── Sets vocabulary generation parameters
+   └── Saves to timestamped config file
+
+
+=== TOKENIZERS PROJECT INTEGRATION ===
+
+6. Tokenizers/main.py::main() [SUBPROCESS]
+   │ Purpose: Entry point for vocabulary generation subprocess
+   ├── Parses command line arguments from Gemma train.py
+   ├── Loads temporary config file
+   ├── Sets up logging for tokenizer training
+   └── Runs generation pipeline
+
+7. Tokenizers/main.py::load_sanskrit_data(data_path, debug, seed)
+   │ Purpose: Loads and validates Sanskrit training texts
+   ├── Supports .txt, .jsonl, .pkl file formats
+   ├── Handles both single files and directories
+   ├── Applies debug sampling if configured
+   └── Returns list of Sanskrit text strings
+
+8. Tokenizers/main.py::prepare_training_data(texts, num_samples)
+   │ Purpose: Prepares final dataset for tokenizer training
+   ├── Samples texts if num_samples specified
+   ├── Logs dataset size information
+   └── Returns training-ready text list
+
+9. Tokenizers/tokenizer_trainers.py::train_with_target_size()
+   │ Purpose: Trains tokenizer to produce exactly N unique tokens
+   ├── Loads target model tokenizer for compatibility checking
+   ├── Uses iterative buffer sizing to hit exact token count
+   ├── Handles algorithm-specific training (BPE, WordPiece, SentencePiece)
+   └── Returns exactly target_size unique tokens
+
+10. Tokenizers/tokenizer_trainers.py::get_unique_tokens()
+    │ Purpose: Filters learned tokens for model compatibility
+    ├── Removes tokens already in base vocabulary
+    ├── Applies model-specific processing rules
+    ├── Handles duplicate removal and validation
+    └── Returns unique, compatible tokens
+
+11. Tokenizers/model_processors.py::get_processor(model_name, model_config)
+    │ Purpose: Factory function for model-specific token processing
+    ├── Returns LlamaProcessor for LLaMA models
+    ├── Returns GemmaProcessor for Gemma models  
+    ├── Returns Gpt2Processor for GPT-2 models
+    └── Handles model-specific token format requirements
+
+12. Processor::process_tokens_for_model(tokens, algorithm)
+    │ Purpose: Converts raw tokens to model-compatible format
+    ├── GemmaProcessor: Handles SentencePiece ▁ prefixes
+    ├── LlamaProcessor: Handles BPE Ġ tokens and ## removal
+    ├── Gpt2Processor: Similar to LLaMA with byte-level considerations
+    └── Returns processed token list
+
+13. Processor::expand_tokenizer(learned_tokens, algorithm_name, max_tokens)
+    │ Purpose: Adds learned tokens to base model tokenizer
+    ├── Copies original tokenizer
+    ├── Processes tokens for model compatibility
+    ├── Adds tokens using tokenizer.add_tokens()
+    └── Returns (expanded_tokenizer, tokens_added, processed_tokens)
+
+14. Tokenizers/main.py::save_vocabulary_to_pickle(vocabulary, output_path, logger)
+    │ Purpose: Saves final processed vocabulary as pickle file
+    ├── Creates output directory if needed
+    ├── Serializes token list to .pkl format
+    ├── Logs save location and token count
+    └── File saved to vocabularies/{vocabulary_file} as configured
+
+
+=== PATH A: STANDARD TRAINING METHODOLOGY ===
+(When config['eeve']['enable'] = false)
+
+15. train.py::run_standard_training(config)
+    │ Purpose: Executes single-stage training without EEVE
+    └── Orchestrates model loading, data loading, and training
+
+16. model_utils.py::load_model_pipeline(config)
+    │ Purpose: Loads and configures model and tokenizer for training
+    ├── Calls apply_torch_compilation_fixes(config)
+    ├── Calls load_tokenizer(config)
+    ├── Calls load_model(config)
+    └── Calls setup_model_for_training(model)
+
+17. model_utils.py::apply_torch_compilation_fixes(config)
+    │ Purpose: Applies PyTorch optimizations and compatibility fixes
+    ├── Enables/disables dynamo error suppression
+    ├── Configures flash attention settings
+    ├── Sets matrix multiplication precision
+    └── Clears CUDA cache and logs memory status
+
+18. model_utils.py::load_tokenizer(config)
+    │ Purpose: Loads base tokenizer and optionally expands vocabulary
+    ├── AutoTokenizer.from_pretrained(model['name'])
+    └── [IF vocabulary['use_custom_vocabulary'] = true]
+        ├── Calls load_custom_vocabulary(vocab_file_path)
+        ├── Calls expand_tokenizer_vocabulary(tokenizer, custom_tokens)
+        └── Logs vocabulary expansion results
+
+19. model_utils.py::load_custom_vocabulary(vocab_file_path)
+    │ Purpose: Loads custom vocabulary from pickle file
+    ├── Opens and deserializes .pkl file
+    ├── Validates token format and content
+    └── Returns list of custom tokens
+
+20. model_utils.py::expand_tokenizer_vocabulary(tokenizer, custom_tokens)
+    │ Purpose: Adds custom tokens to base tokenizer
+    ├── Filters out existing tokens
+    ├── Uses tokenizer.add_tokens() for new tokens
+    ├── Logs addition statistics
+    └── Returns number of tokens added
+
+21. model_utils.py::load_model(config)
+    │ Purpose: Loads pre-trained model with specified configuration
+    ├── AutoModelForCausalLM.from_pretrained(model['name'])
+    ├── Applies dtype and device settings
+    ├── Handles model-specific configurations
+    └── Returns loaded model
+
+22. model_utils.py::setup_model_for_training(model)
+    │ Purpose: Configures model for training optimization
+    ├── Enables gradient checkpointing if configured
+    ├── Sets up memory optimization settings
+    ├── Configures attention implementation
+    └── Returns training-ready model
+
+23. model_utils.py::resize_model_embeddings(model, tokenizer, tokens_added)
+    │ Purpose: Expands model embedding matrices for new vocabulary
+    ├── Resizes input embeddings (embed_tokens)
+    ├── Resizes output embeddings (lm_head)
+    ├── Initializes new embeddings with appropriate values
+    └── Logs embedding dimension changes
+
+24. data_utils.py::load_data_pipeline(tokenizer, config)
+    │ Purpose: Loads and preprocesses training data
+    ├── Calls load_sanskrit_dataset(config)
+    ├── Calls split_train_eval_data(texts, config)
+    ├── Calls create_datasets(train_texts, eval_texts, tokenizer)
+    └── Calls create_data_collator(tokenizer, config)
+
+25. data_utils.py::load_sanskrit_dataset(config)
+    │ Purpose: Loads Sanskrit texts from configured file paths
+    ├── Tries multiple file paths in sequence
+    ├── Supports .txt, .json, .jsonl file formats
+    ├── Applies fallback data if no files found
+    └── Returns list of text strings
+
+26. data_utils.py::split_train_eval_data(texts, config)
+    │ Purpose: Splits data into training and evaluation sets
+    ├── Uses configured eval_split_ratio
+    ├── Applies random shuffling with seed
+    ├── Handles debug mode data limiting
+    └── Returns (train_texts, eval_texts)
+
+27. data_utils.py::create_datasets(train_texts, eval_texts, tokenizer)
+    │ Purpose: Creates PyTorch datasets from text lists
+    ├── Tokenizes texts with padding and truncation
+    ├── Creates SanskritDataset objects
+    ├── Handles sequence length configuration
+    └── Returns (train_dataset, eval_dataset)
+
+28. data_utils.py::create_data_collator(tokenizer, config)
+    │ Purpose: Creates data collator for batch processing
+    ├── Uses DataCollatorForLanguageModeling
+    ├── Configures MLM settings (typically False for causal LM)
+    └── Returns configured data collator
+
+29. train.py::train_single_stage(config, model, tokenizer, datasets, stage, stage_config)
+    │ Purpose: Executes single training stage (standard or EEVE stage)
+    ├── Calls initialize_wandb(config, stage, stage_config)
+    ├── Calls create_training_arguments(config, stage_config)
+    ├── Creates Trainer(model, args, train_dataset, eval_dataset...)
+    ├── Executes trainer.train()
+    ├── Calls model.save_pretrained(output_path)
+    └── Calls tokenizer.save_pretrained(output_path)
+
+30. train.py::initialize_wandb(config, stage, stage_config)
+    │ Purpose: Initializes Weights & Biases logging for experiment tracking
+    ├── Creates stage-specific run names
+    ├── Logs configuration parameters
+    ├── Sets up experiment grouping
+    └── Handles wandb initialization errors gracefully
+
+31. train.py::create_training_arguments(config, stage_config)
+    │ Purpose: Creates TrainingArguments with stage-specific overrides
+    ├── Sets base training parameters from config
+    ├── Applies stage-specific overrides (epochs, learning_rate)
+    ├── Configures optimization and memory settings
+    └── Returns TrainingArguments object
+
+32. train.py::print_training_summary(config, model, datasets, stage, stage_config)
+    │ Purpose: Logs comprehensive training configuration summary
+    ├── Displays model information and parameter counts
+    ├── Shows dataset sizes and training parameters
+    ├── Reports GPU memory usage
+    └── Logs stage-specific information if applicable
+
+
+=== PATH B: EEVE MULTI-STAGE METHODOLOGY ===
+(When config['eeve']['enable'] = true)
+
+33. train.py::run_eeve_training(config)
+    │ Purpose: Orchestrates multi-stage EEVE training pipeline
+    ├── Gets start_stage and end_stage from config
+    ├── Loops through each stage sequentially
+    └── Handles stage-to-stage model loading and memory management
+
+FOR stage IN range(start_stage, end_stage + 1):
+
+34. train.py::get_eeve_stage_config(config, stage)
+    │ Purpose: Retrieves stage-specific training configuration
+    ├── Reads config['eeve']['stages'][stage]
+    ├── Gets 'train_layers', 'epochs', 'learning_rate'
+    ├── Handles vocabulary-dependent layer configurations
+    └── Returns stage-specific parameters
+
+35. model_utils.py::load_model_pipeline(config, stage, load_from_previous)
+    │ Purpose: Loads model for current EEVE stage
+    ├── [IF stage == 1] Load base model + expand vocabulary
+    ├── [IF stage > 1] Calls load_model_from_stage(prev_stage_path)
+    ├── Same tokenizer setup as standard path
+    └── Returns stage-appropriate model and tokenizer
+
+36. model_utils.py::load_model_from_stage(stage_checkpoint_path)
+    │ Purpose: Loads model from previous EEVE stage checkpoint
+    ├── Loads model state from stage directory
+    ├── Preserves vocabulary expansion from previous stages
+    ├── Maintains training state continuity
+    └── Returns loaded model
+
+37. model_utils.py::get_stage_checkpoint_path(config, stage)
+    │ Purpose: Constructs file path for stage checkpoint
+    ├── Uses eeve['stage_output_dir'] and eeve['run_name']
+    ├── Creates stage-specific directory naming
+    └── Returns absolute checkpoint path
+
+38. model_utils.py::freeze_layers(model, train_layers, n_added_tokens, tokenizer, config)
+    │ Purpose: Applies selective parameter freezing based on stage configuration
+    ├── Freeze ALL parameters: param.requires_grad = False
+    ├── Parse train_layers string (e.g., "added_tokens_embeddings")
+    ├── Apply selective unfreezing based on stage config:
+    │   ├── "added_tokens_embeddings" → Unfreeze only new token embedding rows
+    │   ├── "added_tokens_lm_head" → Unfreeze only new token LM head columns
+    │   ├── "lm_head" → Unfreeze entire output layer
+    │   ├── "hidden_layers" → Unfreeze transformer layers only
+    │   └── "all" → Unfreeze everything
+    ├── Log trainable vs total parameter counts
+    └── Apply gradient masking hooks for sub-token training
+
+39. model_utils.py::apply_embedding_hooks(model, start_idx, end_idx)
+    │ Purpose: Applies gradient hooks for selective embedding training
+    ├── Creates hooks that zero gradients outside token range
+    ├── Registers hooks on embedding layers
+    └── Enables training of specific token subsets
+
+40. model_utils.py::apply_lm_head_hooks(model, start_idx, end_idx)
+    │ Purpose: Applies gradient hooks for selective LM head training
+    ├── Creates hooks that zero gradients outside column range
+    ├── Registers hooks on output projection layer
+    └── Enables training of specific vocabulary subsets
+
+[CONTINUES WITH SAME DATA LOADING AS STANDARD PATH]
+
+41. data_utils.py::load_data_pipeline(tokenizer, config)
+    │ Purpose: Same data loading process as standard training
+    └── [Identical to functions 24-28 above]
+
+42. train.py::train_single_stage(config, model, tokenizer, datasets, stage, stage_config)
+    │ Purpose: Executes training for current EEVE stage
+    ├── Uses stage-specific learning rate and epochs
+    ├── Only unfrozen parameters will receive gradient updates
+    ├── Wandb logging includes stage information
+    ├── Saves to stage-specific checkpoint directory
+    └── Clears GPU memory before next stage
+
+43. model_utils.py::log_trainable_parameters(model)
+    │ Purpose: Logs detailed parameter training statistics
+    ├── Counts trainable vs frozen parameters by layer
+    ├── Calculates percentage of model being trained
+    ├── Provides memory usage estimates
+    └── Logs parameter breakdown for debugging
+
+[LOOP CONTINUES TO NEXT STAGE]
+
+44. MEMORY MANAGEMENT BETWEEN STAGES:
+    │ Purpose: Prevents GPU memory accumulation across stages
+    ├── torch.cuda.empty_cache() after each stage
+    ├── Explicit model deletion if needed
+    ├── GPU memory monitoring and logging
+    └── Graceful handling of memory errors
+
+
+*** KEY ARCHITECTURAL DECISIONS ***
+
+=== Configuration-Driven Design ===
+• Single YAML file (GEMMA_CONFIG.YAML) controls entire pipeline
+• Dictionary-style access: config['section']['key']
+• Absolute paths throughout to avoid working directory dependencies
+
+=== Modular Function Architecture ===
+• train.py: Main orchestration and training logic
+• model_utils.py: Model/tokenizer loading, vocabulary expansion, layer freezing
+• data_utils.py: Data loading, preprocessing, dataset creation
+• config.py: Directory creation utilities
+
+=== EEVE Implementation Strategy ===
+• Progressive unfreezing: Start with minimal parameters, gradually expand
+• Stage checkpointing: Each stage saves independently for resumability
+• Selective gradient masking: Uses PyTorch hooks for sub-token training
+• Memory optimization: GPU cache clearing between stages
+
+=== Vocabulary Expansion Integration ===
+• Tokenizers project integration via subprocess calls
+• Temporary config generation to avoid file conflicts
+• PKL-based token storage for cross-project compatibility
+• Model embedding matrix resizing for new vocabulary
+
+
+*** STAGE-SPECIFIC TRAINING PATTERNS ***
+
+STAGE 1: "added_tokens_embeddings"
+├── Trains: Only new token embedding rows (2048 × embed_dim parameters)
+├── Frozen: All transformer layers, LM head, original embeddings
+└── Purpose: Learn representations for new Sanskrit tokens
+
+STAGE 2: "added_tokens_lm_head" 
+├── Trains: Only new token LM head columns (hidden_dim × 2048 parameters)
+├── Frozen: All transformer layers, embeddings
+└── Purpose: Learn to predict new Sanskrit tokens
+
+STAGE 3: "added_tokens_embeddings,added_tokens_lm_head"
+├── Trains: Both new token components simultaneously
+├── Frozen: All transformer layers, original parameters
+└── Purpose: Joint optimization of new token input/output
+
+STAGE 4-5: Progressive LM head training
+├── Expands training to include full LM head
+├── Maintains new token training
+└── Purpose: Integrate new vocabulary with existing prediction
+
+STAGE 6: "all"
+├── Trains: All model parameters
+├── Frozen: Nothing
+└── Purpose: Full model fine-tuning
+
+STAGE 7: "hidden_layers"
+├── Trains: Only transformer layers (attention, FFN)
+├── Frozen: Embeddings and LM head
+└── Purpose: Refine internal representations without vocabulary drift
+
+
+*** MEMORY AND HARDWARE OPTIMIZATIONS ***
+
+PyTorch Configuration (model_utils.py::apply_torch_compilation_fixes):
+├── Dynamo error suppression for compilation compatibility
+├── Flash attention configuration (disabled for stability)
+├── Matrix multiplication precision tuning
+└── CUDA cache management
+
+Training Optimizations:
+├── Gradient checkpointing with non-reentrant mode
+├── AdaFactor optimizer for memory efficiency
+├── Mixed precision training (BF16/FP16)
+└── Selective parameter training to minimize memory footprint
+
+
+*** OUTPUT STRUCTURE ***
+
+Standard Training:
+└── outputs/final_model/
+    ├── pytorch_model.bin
+    ├── tokenizer.json
+    ├── tokenizer_config.json
+    └── config.json
+
+EEVE Training:
+└── outputs/eeve_stages/
+    ├── {run_name}_stage1/
+    ├── {run_name}_stage2/
+    ├── ...
+    └── {run_name}_stage7/
+        ├── pytorch_model.bin
+        ├── tokenizer.json
+        └── config.json

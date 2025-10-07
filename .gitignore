@@ -20,6 +20,11 @@ Tokenizers/log_score/
 Tokenizers/logs/
 Tokenizers/vocabularies/
 
+# EVALUATION/
+EVALUATION/logs/
+EVALUATION/results/
+EVALUATION/src/__pycache__/
+
 # Log files
 *.log
 

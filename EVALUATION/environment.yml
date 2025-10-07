@@ -1,0 +1,13 @@
+name: llama3_env
+channels:
+  - defaults
+dependencies:
+  - python=3.9
+  - ipykernel
+  - torchaudio
+  - torchvision
+  - pytorch
+  - pytorch-cuda
+  - langchain
+prefix: /home/orrz/.conda/envs/llama3_env
+

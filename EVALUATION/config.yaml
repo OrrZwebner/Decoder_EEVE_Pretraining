@@ -1,0 +1,52 @@
+# FLORES Translation Evaluation Configuration
+
+# Provider settings
+provider:
+  type: "huggingface"  # Options: huggingface, openai, anthropic
+  
+  # HuggingFace configuration (for local models)
+  huggingface:
+    model_name: "google/gemma-7b"  # HF model ID or local path
+    torch_dtype: "float16"  # float16, float32, bfloat16
+    max_new_tokens: 256  # Increased for JSON output
+    temperature: 0.3
+    top_p: 0.9
+    do_sample: true
+  
+  # # OpenAI configuration (optional, for future use)
+  # openai:
+  #   model_name: "gpt-4"
+  #   temperature: 0.3
+  #   max_tokens: 256
+  
+  # # Anthropic configuration (optional, for future use)
+  # anthropic:
+  #   model_name: "claude-3-5-sonnet-20241022"
+  #   temperature: 0.3
+  #   max_tokens: 256
+
+# Translation settings
+translation:
+  source_lang: "Sanskrit"  # Language name or FLORES code (e.g., "san_Deva")
+  target_lang: "English"   # Language name or FLORES code (e.g., "eng_Latn")
+
+# Compute settings (for HuggingFace models)
+compute:
+  devices: "0,3"  # CUDA_VISIBLE_DEVICES (e.g., "0", "0,1", "1,2,3")
+
+# Dataset settings
+dataset:
+  name: "openlanguagedata/flores_plus"
+  split: "devtest"  # Options: dev, devtest
+  # num_samples: null  # null for all samples, or integer for subset (e.g., 10, 100)
+  num_samples: 50  # For quick testing; set to null for full dataset
+
+# Batch processing settings
+batch:
+  memory_cleanup_interval: 10  # Clear GPU cache every N samples
+
+# Path configuration
+paths:
+  hf_home: "/home/orrz/gpufs/hf/.cache/huggingface"
+  hf_token: "/home/orrz/gpufs/hf/.cache/huggingface/token"
+  output_dir: "/home/orrz/gpufs/projects/EVALUATION/results"

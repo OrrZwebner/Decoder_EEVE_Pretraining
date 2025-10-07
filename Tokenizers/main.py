@@ -95,14 +95,17 @@ def load_sanskrit_data(data_path: str, debug: int, seed=42) -> List[str]:
     
     # CORRECTED: This is the full, correct logic for handling files and directories.
     if data_path.is_file():
-        if data_path.suffix == '.pkl':
+        if data_path.suffix == '.pkl': # Handle pickle files
+            logger.info(f"Loading pickle file: {data_path}")
             with open(data_path, 'rb') as f:
                 data = pickle.load(f)
                 texts = data if isinstance(data, list) else [str(data)]
         elif data_path.suffix == '.txt':
+            logger.info(f"Loading text file: {data_path}")
             with open(data_path, 'r', encoding='utf-8') as f:
                 texts = [line.strip() for line in f if line.strip()]
         elif data_path.suffix == '.jsonl':
+            logger.info(f"Loading JSONL file: {data_path}")
             with open(data_path, 'r', encoding='utf-8') as f:
                 for line in f:
                     if line.strip():
@@ -117,6 +120,7 @@ def load_sanskrit_data(data_path: str, debug: int, seed=42) -> List[str]:
             raise ValueError(f"Unsupported file format: {data_path.suffix}")
     
     elif data_path.is_dir():
+        logger.info(f"Loading all supported files from directory: {data_path}")
         # Process all supported files in the directory
         for file_path in data_path.glob("*.pkl"):
             with open(file_path, 'rb') as f:
@@ -143,6 +147,7 @@ def load_sanskrit_data(data_path: str, debug: int, seed=42) -> List[str]:
     if not texts:
         raise ValueError(f"No texts found in {data_path}")
     
+    logger.info(f"Loaded {len(texts):,} from {data_path}")
     # Final filtering and sampling logic
     texts = [str(text).strip() for text in texts if text and len(str(text).strip()) > 0]
 

@@ -242,15 +242,15 @@ debug:
   verbose_logging: true
   print_model_info: true
   print_dataset_info: true
-  # test_mode: false  # Set to true for quick testing runs
-  test_mode: true  # Set to true for quick testing runs
+  test_mode: false  # Set to true for quick testing runs
+  # test_mode: true  # Set to true for quick testing runs
   
   # Data limiting for quick testing
   # limit_train_samples: 0  # 0 = no limit, >0 = limit to N samples
   # limit_eval_samples: 0   # 0 = no limit, >0 = limit to N samples
 
-  limit_train_samples: 128  
-  limit_eval_samples: 32   # Limit eval samples for quick testing
+  # limit_train_samples: 128  
+  # limit_eval_samples: 32   # Limit eval samples for quick testing
   
   # Training overrides for testing
   # test_epochs: 1          # Override epochs when test_mode is true

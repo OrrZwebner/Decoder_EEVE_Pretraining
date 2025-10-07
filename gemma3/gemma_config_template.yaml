@@ -4,9 +4,11 @@
 
 # ===== PROJECT PATHS =====
 project:
-  name: "gemma3-sanskrit-pretraining"
+  # name: "gemma3-sanskrit-iast-pretraining_no_eeve"
+  name: "gemma3-tib-wilie-pretraining_no_eeve"
   root_dir: "/home/orrz/gpufs/projects/gemma3"
-  data_dir: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
+  # data_dir: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
+  data_dir: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
   logs_dir: "/home/orrz/gpufs/projects/gemma3/logs"
   output_dir: "/home/orrz/gpufs/projects/gemma3/outputs/no_stages"  # Default output directory for single-stage training
 # ===== ENVIRONMENT SETTINGS =====
@@ -42,7 +44,8 @@ model:
 
 # ===== TOKENIZER CONFIGURATION =====
 tokenizer:
-  max_length: 256
+  # max_length: 256
+  max_length: 512
   truncation: true
   padding: "max_length"
   add_pad_token: true  # Add pad token if missing
@@ -51,9 +54,25 @@ tokenizer:
 data:
   # Data file paths (absolute paths)
   file_paths:
-    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.txt"
-    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.json"
-    - "/home/orrz/gpufs/projects/gemma3/train.txt"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.txt"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.json"
+    # - "/home/orrz/gpufs/projects/gemma3/train.txt"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/sanskrit_iast_ready_512.txt"
+    # "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_2.jsonl"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_3.jsonl"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_4.jsonl"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_5.jsonl"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_6.jsonl"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_7.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_1.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_2.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_3.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_4.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_5.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_6.jsonl"
+    
+    
 
   
   # Train/eval split
@@ -92,14 +111,18 @@ vocabulary:
   # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
   # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
   # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
-  vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
+  # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
+  vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit_iast/spm_bpe/"
+  # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit_devanagari/spm_bpe/"
 
 # ===== TRAINING CONFIGURATION =====
 training:
   # Basic training settings
   num_train_epochs: 1
-  per_device_train_batch_size: 16
-  per_device_eval_batch_size: 16
+  # per_device_train_batch_size: 16
+  # per_device_eval_batch_size: 16
+  per_device_train_batch_size: 8  # Original batch size
+  per_device_eval_batch_size: 8   # Original batch size
   gradient_accumulation_steps: 8  # Effective batch size = 16 * 8 = 128
   # per_device_train_batch_size: 8  # Reduced for memory efficiency
   # per_device_eval_batch_size: 8  # Reduced for memory efficiency
@@ -135,8 +158,8 @@ eeve:
   # Enable/disable EEVE multi-stage training
   # - false: Standard single-stage training
   # - true: Multi-stage EEVE training (Stages 1-7)
-  # enable: false  # Set to true to enable EEVE training 
-  enable: true  # Set to true to enable EEVE training
+  enable: false  # Set to true to enable EEVE training 
+  # enable: true  # Set to true to enable EEVE training
   
   # EEVE training parameters
   start_stage: 1  # First stage to train (1-7)
@@ -271,7 +294,10 @@ vocabulary_generation:
   
   # Data path for the Tokenizers project (should match your Sanskrit data)
   # This tells the Tokenizers project where to find the Sanskrit training data
-  data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
+  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
+  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/sanskrit_iast_ready_512.txt"
+  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
+  data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
   
   # Number of tokens to generate
   # num_tokens: 16

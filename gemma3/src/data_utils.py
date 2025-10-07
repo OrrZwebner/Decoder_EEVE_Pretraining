@@ -86,6 +86,7 @@ def load_sanskrit_texts_from_file(file_path: str) -> List[str]:
     
     try:
         if file_path.suffix == '.txt':
+            logging.info(f"Loading text file: {file_path}")
             # Load from text file (one text per line)
             with open(file_path, 'r', encoding='utf-8') as f:
                 texts = [line.strip() for line in f.readlines() if line.strip()]
@@ -111,7 +112,22 @@ def load_sanskrit_texts_from_file(file_path: str) -> List[str]:
                     logging.warning(f"No recognized text key found in JSON: {file_path}")
             
             logging.info(f"Loaded {len(texts)} texts from JSON file {file_path}")
+
+        # handling for JSONL files
+        elif file_path.suffix == '.jsonl':
+            logging.info(f"Loading JSONL file: {file_path}")
+            texts = []  # Initialize empty list
             
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    if line.strip():
+                        obj = json.loads(line)
+                        # Extract text from your specific format
+                        if 'text' in obj and isinstance(obj['text'], str):
+                            texts.append(obj['text'].strip())
+            
+            logging.info(f"Loaded {len(texts)} texts from JSONL file {file_path}")
+
         else:
             logging.warning(f"Unsupported file format: {file_path}")
     
@@ -219,10 +235,10 @@ def load_sanskrit_dataset(config) -> List[str]:
     for file_path in file_paths:
         file_texts = load_sanskrit_texts_from_file(file_path)
         texts.extend(file_texts)
-        
-        if file_texts:  # If we found texts in this file, we can stop looking
-            logging.info(f"Successfully loaded data from {file_path}")
-            break
+        logging.info(f"Successfully loaded data from {file_path}")
+        # if file_texts:  # If we found texts in this file, we can stop looking
+        #     logging.info(f"Successfully loaded data from {file_path}")
+        #     break
     
     # Use fallback if no texts found and fallback is enabled
     if not texts and data_config.get('use_fallback', False):

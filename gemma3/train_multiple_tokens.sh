@@ -5,10 +5,12 @@
 # Configuration
 # TOKEN_COUNTS=(128 256 512 1024 2048 4096)  # List of token counts to train
 # TOKEN_COUNTS=(128 256 512 1024)  # List of token counts to train
-TOKEN_COUNTS=(2048 4096 8192 16384 32768)  # List of token counts to train
+TOKEN_COUNTS=(16384 32768)  # List of token counts to train
+# TOKEN_COUNTS=(32 64 128 256 512 1024 2048 4096 8192 16384 32768)  # List of token counts to train
+# TOKEN_COUNTS=(32)  # List of token counts to train
 # ALGORITHM="sentencepiece_bpe"  # or get from command line
 BASE_LOG_DIR="logs/pre_train_1b/sanskrit"
-VOCAB_BASE_PATH="/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe"
+# VOCAB_BASE_PATH="/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe"
 CONFIG_TEMPLATE="gemma_config_template.yaml"
 CONFIG_DIR="configs/token_configs"
 # CONFIG_BACKUP="gemma_config_backup.yaml"

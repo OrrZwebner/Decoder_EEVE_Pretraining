@@ -4,20 +4,21 @@
 
 # ===== PROJECT PATHS =====
 project:
-  name: "gemma3-sanskrit-pretraining"
-  root_dir: "/home/orrz/gpufs/projects/gemma3"
-  data_dir: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
-  logs_dir: "/home/orrz/gpufs/projects/gemma3/logs"
-  output_dir: "/home/orrz/gpufs/projects/gemma3/outputs/no_stages"  # Default output directory for single-stage training
+  # name: "gemma3-sanskrit-iast-pretraining_no_eeve"
+  name: "gemma3-tib-wilie-pretraining_no_eeve"
+  root_dir: "/home/orr.zwebner/projects/Decoder_EEVE_Pretraining/gemma3"
+  data_dir: "/home/orr.zwebner/projects/Decoder_EEVE_Pretraining/gemma3/data"
+  logs_dir: "/home/orr.zwebner/projects/Decoder_EEVE_Pretraining/gemma3/logs"
+  output_dir: "/home/orr.zwebner/projects/Decoder_EEVE_Pretraining/gemma3/outputs/no_stages"
 # ===== ENVIRONMENT SETTINGS =====
 environment:
-  # cuda_visible_devices: 0  # Use GPU 3 (as specified in your config)
-  cuda_visible_devices: "1"  # Use GPU 1 (as specified in your config)
+  cuda_visible_devices: "0"  # Use GPU 3 (as specified in your config)
+  # cuda_visible_devices: "1"  # Use GPU 1 (as specified in your config)
   # cuda_visible_devices: "2"  # Use GPU 1 (as specified in your config)
   # cuda_visible_devices: "3"  # Use GPU 1 (as specified in your config)
   torch_compile_disable: true
   pytorch_disable_dynamo: true
-  hf_home: "/home/orrz/gpufs/hf/.cache/huggingface"
+  hf_home: "/home/orr.zwebner/.cache/huggingface"  # Standard HF cache location
 
 
 # ===== AUTHENTICATION CONFIGURATION =====
@@ -42,7 +43,8 @@ model:
 
 # ===== TOKENIZER CONFIGURATION =====
 tokenizer:
-  max_length: 256
+  # max_length: 256
+  max_length: 512
   truncation: true
   padding: "max_length"
   add_pad_token: true  # Add pad token if missing
@@ -51,9 +53,25 @@ tokenizer:
 data:
   # Data file paths (absolute paths)
   file_paths:
-    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.txt"
-    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.json"
-    - "/home/orrz/gpufs/projects/gemma3/train.txt"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.txt"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.json"
+    # - "/home/orrz/gpufs/projects/gemma3/train.txt"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/sanskrit_iast_ready_512.txt"
+    # "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_2.jsonl"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_3.jsonl"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_4.jsonl"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_5.jsonl"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_6.jsonl"
+    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_7.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_1.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_2.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_3.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_4.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_5.jsonl"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_6.jsonl"
+    
+    
 
   
   # Train/eval split
@@ -92,14 +110,18 @@ vocabulary:
   # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
   # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
   # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
-  vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
+  # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
+  vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit_iast/spm_bpe/"
+  # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit_devanagari/spm_bpe/"
 
 # ===== TRAINING CONFIGURATION =====
 training:
   # Basic training settings
   num_train_epochs: 1
-  per_device_train_batch_size: 16
-  per_device_eval_batch_size: 16
+  # per_device_train_batch_size: 16
+  # per_device_eval_batch_size: 16
+  per_device_train_batch_size: 8  # Original batch size
+  per_device_eval_batch_size: 8   # Original batch size
   gradient_accumulation_steps: 8  # Effective batch size = 16 * 8 = 128
   # per_device_train_batch_size: 8  # Reduced for memory efficiency
   # per_device_eval_batch_size: 8  # Reduced for memory efficiency
@@ -142,9 +164,7 @@ eeve:
   start_stage: 1  # First stage to train (1-7)
   end_stage: 4    # Last stage to train (1-7)
   
-  # Number of added tokens (required for EEVE stages 1-3)
-  # Set this to the actual number of tokens added to vocabulary
-  # n_added_tokens: 2048  # Example from your config
+
   
 
   stages:
@@ -177,7 +197,7 @@ eeve:
   stage_output_dir: "/home/orrz/gpufs/projects/gemma3/outputs/eeve_stages"  # Directory for stage checkpoints
   
   # Run naming (inspired by your config)
-  run_name: "gemma3_sanskrit_eeve_16"
+  run_name: "gemma3_sanskrit_eeve_"
   # Examples from your pattern:
   # run_name: "ru_bpe_2k_7_stages_2.0"
   # run_name: "sanskrit_custom_tokens_eeve"
@@ -242,15 +262,15 @@ debug:
   verbose_logging: true
   print_model_info: true
   print_dataset_info: true
-  # test_mode: false  # Set to true for quick testing runs
-  test_mode: true  # Set to true for quick testing runs
+  test_mode: false  # Set to true for quick testing runs
+  # test_mode: true  # Set to true for quick testing runs
   
   # Data limiting for quick testing
   # limit_train_samples: 0  # 0 = no limit, >0 = limit to N samples
   # limit_eval_samples: 0   # 0 = no limit, >0 = limit to N samples
 
-  limit_train_samples: 128  
-  limit_eval_samples: 32   # Limit eval samples for quick testing
+  # limit_train_samples: 128  
+  # limit_eval_samples: 32   # Limit eval samples for quick testing
   
   # Training overrides for testing
   # test_epochs: 1          # Override epochs when test_mode is true
@@ -273,7 +293,10 @@ vocabulary_generation:
   
   # Data path for the Tokenizers project (should match your Sanskrit data)
   # This tells the Tokenizers project where to find the Sanskrit training data
-  data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
+  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
+  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/sanskrit_iast_ready_512.txt"
+  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
+  data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
   
   # Number of tokens to generate
   # num_tokens: 16

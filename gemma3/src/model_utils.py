@@ -11,7 +11,6 @@ import logging
 import functools
 import pickle
 from pathlib import Path
-from typing import Tuple, Optional, Any, List, Union
 from transformers import (
     AutoTokenizer, 
     AutoModelForCausalLM,
@@ -19,6 +18,8 @@ from transformers import (
 )
 from typing import Tuple, Optional, Any, List, Union, Dict  # Add Dict to the existing import
 
+# Import mean initialization function
+from initializations.mean_init import instantiate_model_by_mean
 # Import accelerate for compatibility patches
 try:
     import accelerate
@@ -28,10 +29,56 @@ except ImportError:
     ACCELERATE_AVAILABLE = False
     logging.warning("Accelerate not available - skipping compatibility patches")
 
-def get_n_added_tokens(config) -> int:
-    """Get number of added tokens from config"""
-    vocab_gen_config = config.get('vocabulary_generation', {})
-    return vocab_gen_config.get('num_tokens', 0)
+def get_n_added_tokens(
+    config, 
+    model: Optional[AutoModelForCausalLM] = None, 
+    tokenizer: Optional[AutoTokenizer] = None,
+    base_vocab_size: Optional[int] = None
+) -> int:
+    """
+    Get number of added tokens, prioritizing actual model/tokenizer state over config.
+    
+    Args:
+        config: Configuration dictionary
+        model: Optional model to get embedding size from
+        tokenizer: Optional tokenizer to get vocab size from
+        base_vocab_size: Optional base vocabulary size (before expansion)
+    
+    Returns:
+        Number of added tokens
+    """
+
+    if base_vocab_size is None:
+        original_tokenizer = AutoTokenizer.from_pretrained(
+            config['model']['name'],
+            local_files_only=config.get('compatibility', {}).get('local_files_only', False),
+            trust_remote_code=config['model'].get('trust_remote_code', True)
+        )
+        base_vocab_size = len(original_tokenizer)
+
+    # Priority 1: Calculate from actual model and tokenizer
+    if model is not None:
+        model_vocab_size = model.get_input_embeddings().weight.shape[0]
+    
+    if tokenizer is not None:
+        tokenizer_vocab_size = len(tokenizer)
+    
+    # if embeddings were expanded beyond tokenizer
+    if model_vocab_size and tokenizer_vocab_size:
+        if model_vocab_size > tokenizer_vocab_size:
+            logging.warning(f"Model vocab ({model_vocab_size}) > tokenizer vocab ({tokenizer_vocab_size})")
+            return 0
+
+    if not tokenizer:
+        tokenizer_vocab_size = model_vocab_size
+        logging.info(f"çTokenizer not provided - using model vocab size: {tokenizer_vocab_size}")
+
+    if not tokenizer_vocab_size or not base_vocab_size:
+        logging.warning("Insufficient information to determine added tokens - returning 0")
+        return 0
+
+    return tokenizer_vocab_size - base_vocab_size
+    
 
 
 def apply_accelerate_compatibility_patch() -> None:
@@ -266,7 +313,8 @@ def load_custom_vocabulary(vocab_file_path: str, config) -> List[str]:
     except Exception as e:
         raise ValueError(f"Error loading vocabulary file {vocab_file_path}: {e}")
 
-def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False):
+
+def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False, load_from_dir: Optional[str] = None, base_vocab_size: Optional[int] = None) -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
     """
     Complete model loading pipeline with vocabulary expansion and stage support
     
@@ -274,7 +322,9 @@ def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False
         config (dict): Configuration dictionary
         stage (int): Current EEVE training stage (0 for standard training)
         load_from_previous (bool): Whether to load from previous stage checkpoint
-        
+        load_from_dir (str, optional): Directory to load model from instead of fresh
+        base_vocab_size (int, optional): Base vocabulary size for model
+
     Returns:
         Tuple[AutoModelForCausalLM, AutoTokenizer]: Loaded model and tokenizer
     """
@@ -303,13 +353,24 @@ def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False
             logging.error(f"Failed to load from stage {stage - 1}, loading fresh model instead")
             tokenizer = load_tokenizer(config)
             model = load_model(config)
+    elif load_from_dir:
+        # Load model from specified directory
+        logging.info(f"Loading model from specified directory: {load_from_dir}")
+
+        model, tokenizer = load_model_from_stage(load_from_dir, config)
+        if model is None or tokenizer is None:
+            logging.error(f"Failed to load from directory {load_from_dir}, loading fresh model instead")
+            tokenizer = load_tokenizer(config)
+            model = load_model(config)
     else:
         # Load fresh model and tokenizer
         tokenizer = load_tokenizer(config)
         model = load_model(config)
 
+
     # Only handle vocabulary expansion for stage 1 or standard training
     if stage <= 1 and not load_from_previous:
+        logging.info("Handling vocabulary expansion for model...")
         vocab_config = config.get('vocabulary', {})
         if vocab_config.get('use_custom_vocabulary', False):
             # Check if resizing is needed
@@ -319,18 +380,46 @@ def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False
             if tokenizer_vocab_size > model_vocab_size:
                 tokens_added = tokenizer_vocab_size - model_vocab_size
                 logging.info(f"Resizing model embeddings for expanded vocabulary...")
-                model = resize_model_embeddings(model, tokenizer, tokens_added, config)
+
+                # Load source tokenizer for mean initialization
+                model_config = config['model']
+                source_tokenizer = AutoTokenizer.from_pretrained(
+                    model_config['name'],
+                    local_files_only=config.get('compatibility', {}).get('local_files_only', False),
+                    trust_remote_code=model_config.get('trust_remote_code', True),
+                )
+                
+                # Get initialization method from config
+                init_method = vocab_config.get('embedding_init_method', 'mean')
+                
+                model = resize_model_embeddings(
+                    model, 
+                    tokenizer, 
+                    tokens_added, 
+                    config,
+                    source_tokenizer=source_tokenizer,
+                    init_method=init_method
+                )
+
 
     # Apply layer freezing AFTER model resizing if this is an EEVE stage
-    if stage > 0 and 'eeve' in config and config['eeve'].get('enable', False):
-        stages_config = config['eeve'].get('stages', {})
-        stage_config = stages_config.get(stage, {})
+    # if stage > 0 and 'eeve' in config and config['eeve'].get('enable', False):
+    if stage > 0 and (config.get('eeve', {}).get('enable', False) or config.get('two_stage_training', {}).get('enable', False)):
+        # stages_config = config['eeve'].get('stages', {})
+        # stage_config = stages_config.get(stage, {})
+        # Get stage config from either EEVE or 2-stage training
+        if config.get('two_stage_training', {}).get('enable', False):
+            stage_config = get_eeve_stage_config(config, stage)
+        else:
+            stages_config = config['eeve'].get('stages', {})
+            stage_config = stages_config.get(stage, {})
         if stage_config:
-            train_layers = stage_config.get('train_layers', 'all')
-            n_added_tokens = get_n_added_tokens(config)
+            train_layers = stage_config.get('train_layers', 'all') 
+            n_added_tokens = get_n_added_tokens(config, model, tokenizer, base_vocab_size)
             
             logging.info(f"🎯 Stage {stage}: Applying layer freezing - {train_layers}")
             freeze_layers(model, train_layers, n_added_tokens, tokenizer, config)
+
 
             # Verify gradient masking for added_tokens_embeddings mode
             if train_layers == 'added_tokens_embeddings':
@@ -338,6 +427,34 @@ def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False
                 
                 # Store verification results in model metadata for later use
                 model._gradient_masking_verification = verification
+    
+    # ADD LORA CONFIGURATION HERE - AFTER layer freezing, BEFORE setup_model_for_training:
+    # Apply LoRA if enabled
+    lora_config = config.get('lora', {})
+
+    # Determine if single-stage training (no EEVE or 2-stage)
+    is_single_stage = not config.get('eeve', {}).get('enable', False) and not config.get('two_stage_training', {}).get('enable', False)
+
+    if lora_config.get('enable', False) and is_single_stage: # Only apply LoRA for single-stage training
+        # log the lora configuration
+        logging.info("Applying LoRA configuration:")
+        logging.info(lora_config)
+        from peft import LoraConfig, get_peft_model
+        
+        peft_config = LoraConfig(
+            r=lora_config.get('r', 64),
+            lora_alpha=lora_config.get('lora_alpha', 128),
+            lora_dropout=lora_config.get('lora_dropout', 0.1),
+            bias=lora_config.get('bias', 'none'),
+            target_modules=lora_config.get('target_modules', ["q_proj", "k_proj", "v_proj", "o_proj"]),
+            task_type=lora_config.get('task_type', 'CAUSAL_LM'),
+        )
+        
+        model = get_peft_model(model, peft_config)
+        logging.info("✅ LoRA enabled")
+        model.print_trainable_parameters()
+    else:
+        logging.info("ℹ️ LoRA disabled - using full model training")
     
     # Setup model for training
     model = setup_model_for_training(model, config)
@@ -405,16 +522,24 @@ def expand_tokenizer_vocabulary(tokenizer: AutoTokenizer, custom_tokens: List[st
         raise ValueError(f"Unsupported add_tokens_method: {add_method}")
 
 
-def resize_model_embeddings(model: AutoModelForCausalLM, tokenizer: AutoTokenizer, 
-                          tokens_added: int, config) -> AutoModelForCausalLM:
+def resize_model_embeddings(
+    model: AutoModelForCausalLM, 
+    tokenizer: AutoTokenizer, 
+    tokens_added: int, 
+    config,
+    source_tokenizer: Optional[AutoTokenizer] = None,
+    init_method: str = "mean"
+) -> AutoModelForCausalLM:
     """
-    Resize model embeddings to accommodate new vocabulary tokens
+    Resize model embeddings to accommodate new vocabulary tokens with smart initialization.
     
     Args:
         model: Model to resize
-        tokenizer: Tokenizer with expanded vocabulary
+        tokenizer: Tokenizer with expanded vocabulary (target tokenizer)
         tokens_added: Number of tokens that were added
         config: Configuration dictionary
+        source_tokenizer: Original tokenizer before expansion (needed for mean init)
+        init_method: Initialization method - "mean" (default) or "random"
         
     Returns:
         Model with resized embeddings
@@ -423,7 +548,7 @@ def resize_model_embeddings(model: AutoModelForCausalLM, tokenizer: AutoTokenize
         logging.info("No tokens were added - skipping embedding resize")
         return model
     
-    vocab_config = config['vocabulary']
+    vocab_config = config.get('vocabulary', {})
     debug_vocab = vocab_config.get('debug_vocabulary', True)
     should_resize = vocab_config.get('resize_model_embeddings', True)
     
@@ -439,9 +564,36 @@ def resize_model_embeddings(model: AutoModelForCausalLM, tokenizer: AutoTokenize
         logging.info(f"  Original embedding size: {original_embed_size:,}")
         logging.info(f"  New vocabulary size: {new_vocab_size:,}")
         logging.info(f"  Tokens added: {tokens_added}")
+        logging.info(f"  Initialization method: {init_method}")
     
-    # Resize token embeddings
-    model.resize_token_embeddings(new_vocab_size)
+    # Check if we should use mean initialization
+    if init_method == "mean":
+        logging.info("Using mean initialization for new token embeddings")
+    
+        if not source_tokenizer:
+            source_tokenizer = AutoTokenizer.from_pretrained(
+                config['model']['name'],
+                local_files_only=config.get('compatibility', {}).get('local_files_only', False),
+                trust_remote_code=config['model'].get('trust_remote_code', True)
+            )
+        
+        # Check if embeddings are tied
+        tie_word_embeddings = model.config.tie_word_embeddings if hasattr(model.config, 'tie_word_embeddings') else False
+        logging.info(f"Model tie_word_embeddings: {tie_word_embeddings}")
+        
+        # Use mean initialization
+        model, _ = instantiate_model_by_mean(
+            source_model=model,
+            source_tokenizer=source_tokenizer,
+            target_tokenizer=tokenizer,
+            tie_word_embeddings=tie_word_embeddings,
+            pad_to_multiple_of=8
+        )
+        
+    else:
+        # Fallback to standard resize (random initialization)  
+        logging.info("(random initialization)")
+        model.resize_token_embeddings(new_vocab_size, pad_to_multiple_of=8)
     
     # Log memory usage change if CUDA is available
     if torch.cuda.is_available() and debug_vocab:
@@ -533,12 +685,13 @@ def load_model_from_stage(stage_path: str, config) -> Tuple[Optional[AutoModelFo
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=torch_dtype,
+            device_map="auto",
             trust_remote_code=model_config.get('trust_remote_code', True),
             use_cache=model_config.get('use_cache', False),
             attn_implementation=model_config.get('attn_implementation', 'eager'),
             low_cpu_mem_usage=model_config.get('low_cpu_mem_usage', True),
             local_files_only=True
-        ).to(device)
+        )
         
         # ALSO load the tokenizer from the checkpoint
         tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
@@ -651,6 +804,7 @@ def load_tokenizer(config) -> AutoTokenizer:
         raise
 
 
+
 def load_model(config) -> AutoModelForCausalLM:
     """
     Load and configure Gemma-3 model
@@ -661,24 +815,58 @@ def load_model(config) -> AutoModelForCausalLM:
     Returns:
         Configured AutoModelForCausalLM
     """
+
+    cuda_visible = os.environ.get('CUDA_VISIBLE_DEVICES', 'NOT SET')
+    if cuda_visible == 'NOT SET':
+        logging.error("❌ CUDA_VISIBLE_DEVICES not set before model loading!")
+        raise RuntimeError("Must set CUDA_VISIBLE_DEVICES before importing model utilities")
+    
+    logging.info(f"🔒 Loading model with CUDA_VISIBLE_DEVICES={cuda_visible}")
+    
+
+    debug_gpu_setup()
+
     model_config = config['model']
     auth_token = load_authentication_token(config)
     
-    # Get device
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    # === DEBUGGING SECTION START ===
+    logging.info("=== GPU DEBUG INFO ===")
+    logging.info(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}")
+    logging.info(f"torch.cuda.is_available(): {torch.cuda.is_available()}")
+    logging.info(f"torch.cuda.device_count(): {torch.cuda.device_count()}")
+    
+    if torch.cuda.is_available():
+        logging.info(f"torch.cuda.current_device(): {torch.cuda.current_device()}")
+        for i in range(torch.cuda.device_count()):
+            logging.info(f"  GPU {i}: {torch.cuda.get_device_name(i)}")
+            logging.info(f"  GPU {i} memory: {torch.cuda.memory_allocated(i) / 1e9:.2f} GB allocated")
+    logging.info("=====================")
+    # === DEBUGGING SECTION END ===
+    
+    # Fixed device assignment
+    if torch.cuda.is_available():
+        # When CUDA_VISIBLE_DEVICES is set, use cuda:0 (which maps to the visible device)
+        device = torch.device("cuda:0")
+        logging.info(f"Using device: {device} (mapped from CUDA_VISIBLE_DEVICES={os.environ.get('CUDA_VISIBLE_DEVICES')})")
+    else:
+        device = torch.device("cpu")
+        logging.info("Using device: CPU")
     
     # Convert dtype string to torch dtype
     torch_dtype = get_torch_dtype(model_config.get('torch_dtype', 'bfloat16'))
     
     logging.info(f"Loading model: {model_config['name']}")
-    logging.info(f"Device: {device}")
+    logging.info(f"Target device: {device}")
     logging.info(f"Dtype: {torch_dtype}")
     
     try:
+        # For heavy models, use device_map="auto" to load directly to GPU
+        logging.info("Loading model with device_map='auto'...")
+        
         model = AutoModelForCausalLM.from_pretrained(
             model_config['name'],
             torch_dtype=torch_dtype,
-            # device_map="auto",
+            device_map="auto",  # Auto device mapping - no CPU usage
             # load_in_8bit=True,
             cache_dir=None,
             ignore_mismatched_sizes=model_config.get('ignore_mismatched_sizes', True),
@@ -688,25 +876,88 @@ def load_model(config) -> AutoModelForCausalLM:
             attn_implementation=model_config.get('attn_implementation', 'eager'),
             low_cpu_mem_usage=model_config.get('low_cpu_mem_usage', True),
             token=auth_token
-            
-        ).to(device)
+        )
         
-        logging.info(f"✅ Model loaded successfully")
+        logging.info("Model loaded with automatic device mapping")
         
-        # Log memory usage if CUDA is available
+        # Verify the model device placement
+        model_devices = {name: param.device for name, param in model.named_parameters()}
+        unique_devices = set(model_devices.values())
+        logging.info(f"✅ Model loaded successfully on device(s): {unique_devices}")
+        
+        # Log which device has the most parameters (main device)
+        from collections import Counter
+        device_counts = Counter(model_devices.values())
+        main_device = device_counts.most_common(1)[0][0]
+        logging.info(f"Main model device: {main_device}")
+        
+        # Check for meta devices (should be none)
+        meta_params = [name for name, param in model.named_parameters() if param.device.type == 'meta']
+        if meta_params:
+            logging.error(f"❌ Found {len(meta_params)} parameters on meta device!")
+            logging.error(f"Sample meta parameters: {meta_params[:5]}")
+        else:
+            logging.info("✅ All model parameters properly loaded to GPU")
+        
+        # Double-check that we're on the right physical GPU
         if torch.cuda.is_available():
-            memory_allocated = torch.cuda.memory_allocated(device) / 1024**3
-            logging.info(f"GPU memory allocated: {memory_allocated:.2f} GB")
-            
-            if config.get('hardware', {}).get('monitor_gpu_memory', False): 
-                memory_reserved = torch.cuda.memory_reserved(device) / 1024**3
-                logging.info(f"GPU memory reserved: {memory_reserved:.2f} GB")
+            for device in unique_devices:
+                if device.type == 'cuda':
+                    current_gpu = device.index if device.index is not None else 0
+                    logging.info(f"Using GPU index {current_gpu} (physical GPU {os.environ.get('CUDA_VISIBLE_DEVICES', current_gpu)})")
+                    
+                    # Log memory usage for this GPU
+                    memory_allocated = torch.cuda.memory_allocated(current_gpu) / 1024**3
+                    logging.info(f"GPU {current_gpu} memory allocated: {memory_allocated:.2f} GB")
+                    
+                    if config.get('hardware', {}).get('monitor_gpu_memory', False): 
+                        memory_reserved = torch.cuda.memory_reserved(current_gpu) / 1024**3
+                        logging.info(f"GPU {current_gpu} memory reserved: {memory_reserved:.2f} GB")
         
         return model
         
     except Exception as e:
         logging.error(f"Failed to load model: {e}")
+        # Additional debugging on failure
+        if torch.cuda.is_available():
+            for i in range(torch.cuda.device_count()):
+                mem_allocated = torch.cuda.memory_allocated(i) / 1e9
+                mem_reserved = torch.cuda.memory_reserved(i) / 1e9
+                logging.error(f"GPU {i} memory - Allocated: {mem_allocated:.2f} GB, Reserved: {mem_reserved:.2f} GB")
         raise
+
+def debug_gpu_setup():
+    """Debug GPU setup before model loading"""
+    import gc
+    import torch
+    
+    print("\n=== PRE-MODEL GPU DEBUG ===")
+    print(f"CUDA_VISIBLE_DEVICES: {os.environ.get('CUDA_VISIBLE_DEVICES', 'Not set')}")
+    print(f"PyTorch CUDA available: {torch.cuda.is_available()}")
+    print(f"PyTorch device count: {torch.cuda.device_count()}")
+    
+    if torch.cuda.is_available():
+        for i in range(torch.cuda.device_count()):
+            print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
+            print(f"  Memory allocated: {torch.cuda.memory_allocated(i) / 1e9:.2f} GB")
+            print(f"  Memory cached: {torch.cuda.memory_reserved(i) / 1e9:.2f} GB")
+    
+    # Check for existing tensors on GPU 0
+    gpu_0_tensors = 0
+    for obj in gc.get_objects():
+        try:
+            if torch.is_tensor(obj) and obj.is_cuda and obj.device.index == 0:
+                gpu_0_tensors += 1
+        except:
+            pass
+    
+    if gpu_0_tensors > 0:
+        print(f"⚠️  WARNING: Found {gpu_0_tensors} existing tensors on GPU 0!")
+    
+    print("===========================\n")
+
+# Call this right before load_model():
+
 
 
 def print_model_info(model: AutoModelForCausalLM, tokenizer: AutoTokenizer, config) -> None:
@@ -1195,10 +1446,14 @@ def verify_gradient_masking(model, stage: int = 0) -> Dict[str, Any]:
     return verification_results
 
 
-def count_effective_trainable_parameters(model) -> dict:
+def count_effective_trainable_parameters(model, tokenizer: Optional[AutoTokenizer] = None) -> dict:
     """
     Count parameters that will actually be trained (respects gradient masking).
     Use this instead of PyTorch's standard counting for accurate results.
+    
+    Args:
+        model: The model to count parameters for
+        tokenizer: Optional tokenizer for more accurate added token counting
     """
     pytorch_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total_params = sum(p.numel() for p in model.parameters())
@@ -1208,7 +1463,12 @@ def count_effective_trainable_parameters(model) -> dict:
         if param.requires_grad:
             if hasattr(param, '_added_tokens_only') and param._added_tokens_only:
                 # Only count the masked portion
-                effective_trainable += param._n_added_tokens * param._embed_dim
+                # Verify _n_added_tokens is set correctly
+                if hasattr(param, '_n_added_tokens'):
+                    effective_trainable += param._n_added_tokens * param._embed_dim
+                else:
+                    logging.warning("Parameter has _added_tokens_only but no _n_added_tokens attribute")
+                    effective_trainable += param.numel()  # Fallback
             else:
                 # Count all parameters
                 effective_trainable += param.numel()

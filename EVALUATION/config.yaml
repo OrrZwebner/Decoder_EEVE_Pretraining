@@ -6,7 +6,10 @@ provider:
   
   # HuggingFace configuration (for local models)
   huggingface:
-    model_name: "google/gemma-7b"  # HF model ID or local path
+    # model_name: "google/gemma-7b"  # HF model ID or local path
+    # model_name: "google/gemma-3-12b-it"  # HF model ID or local path
+    # model_name: "google/gemma-3-1b-it"  # HF model ID or local path
+    model_name: "/home/orrz/gpufs/projects/gemma3/outputs/no_stages/sentencepiece_bpe_32_22-10-2025_1750/merged_model"
     torch_dtype: "float16"  # float16, float32, bfloat16
     max_new_tokens: 256  # Increased for JSON output
     temperature: 0.3
@@ -27,12 +30,17 @@ provider:
 
 # Translation settings
 translation:
-  source_lang: "Sanskrit"  # Language name or FLORES code (e.g., "san_Deva")
-  target_lang: "English"   # Language name or FLORES code (e.g., "eng_Latn")
+  # source_lang: "Sanskrit"  # Language name or FLORES code (e.g., "san_Deva")
+  # target_lang: "English"   # Language name or FLORES code (e.g., "eng_Latn")
+  # source_lang: "Hebrew"
+  # target_lang: "English"
+
+  source_lang: "English"
+  target_lang: "Hebrew"
 
 # Compute settings (for HuggingFace models)
 compute:
-  devices: "0,3"  # CUDA_VISIBLE_DEVICES (e.g., "0", "0,1", "1,2,3")
+  devices: "1,2"  # CUDA_VISIBLE_DEVICES (e.g., "0", "0,1", "1,2,3")
 
 # Dataset settings
 dataset:
@@ -40,6 +48,7 @@ dataset:
   split: "devtest"  # Options: dev, devtest
   # num_samples: null  # null for all samples, or integer for subset (e.g., 10, 100)
   num_samples: 50  # For quick testing; set to null for full dataset
+  # num_samples: 3  # null for all samples, or integer for subset (e.g., 10, 100)
 
 # Batch processing settings
 batch:

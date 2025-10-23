@@ -1,0 +1,39 @@
+# FLORES Translation Evaluation Configuration - TEMPLATE
+# Placeholders: MODEL_NAME, SOURCE_LANG, TARGET_LANG, DEVICES, NUM_SAMPLES
+
+# Provider settings
+provider:
+  type: "huggingface"
+  
+  huggingface:
+    model_name: "MODEL_NAME"  # Will be replaced by bash script
+    torch_dtype: "float16"
+    max_new_tokens: 256
+    temperature: 0.3
+    top_p: 0.9
+    do_sample: true
+
+# Translation settings
+translation:
+  source_lang: "SOURCE_LANG"  # Will be replaced by bash script
+  target_lang: "TARGET_LANG"  # Will be replaced by bash script
+
+# Compute settings
+compute:
+  devices: "DEVICES"  # Will be replaced by bash script
+
+# Dataset settings
+dataset:
+  name: "openlanguagedata/flores_plus"
+  split: "devtest"
+  num_samples: NUM_SAMPLES  # Will be replaced by bash script
+
+# Batch processing settings
+batch:
+  memory_cleanup_interval: 10
+
+# Path configuration
+paths:
+  hf_home: "/home/orrz/gpufs/hf/.cache/huggingface"
+  hf_token: "/home/orrz/gpufs/hf/.cache/huggingface/token"
+  output_dir: "/home/orrz/gpufs/projects/EVALUATION/results"

@@ -35,6 +35,10 @@ def load_config(config_path, cli_args=None):
         
         if cli_args.target_lang is not None:
             config['translation']['target_lang'] = cli_args.target_lang
+
+        if cli_args.model_name is not None:
+            provider_type = config['provider']['type']
+            config['provider'][provider_type]['model_name'] = cli_args.model_name
     
     return config
 

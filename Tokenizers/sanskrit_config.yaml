@@ -2,9 +2,20 @@
 
 # Data configuration
 data:
+  # Data source type: "local_files" or "huggingface"
+  source_type: "local_files"  # Change to "huggingface" to use HF datasets
+
   path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data" # Path to Sanskrit data directory/file (relative to script location)
   debug: 0 # number of debug samples to log (0 = use full dataset)
+  
+  # For HuggingFace datasets (used when source_type is "huggingface")
 
+  hf_dataset_name: "cc100"
+  hf_dataset_config: "he"
+  hf_text_column: "text"
+  hf_split: "train"
+  hf_streaming: true
+  hf_trust_remote_code: true
 # Logging configuration
 logging:
   log_dir: "logs/tokenizers"  # Directory for detailed log files

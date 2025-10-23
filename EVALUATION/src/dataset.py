@@ -59,6 +59,7 @@ def load_flores_dataset(config):
     # Limit samples if specified
     num_samples = dataset_config.get('num_samples')
     if num_samples is not None:
+        num_samples = int(num_samples) # convert to integer
         pairs = pairs[:num_samples]
         print(f"Limited to {num_samples} samples")
     

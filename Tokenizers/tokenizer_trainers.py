@@ -438,9 +438,9 @@ def train_with_target_size(texts: List[str], algorithm: str, target_size: int,
     
     # Calculate adjusted target accounting for processing losses
     adjusted_target = int(target_size / (1 - processing_loss_rate))
-    
-    buffer_multipliers = [1.5, 2, 3, 4, 5, 8, 12]  # Extended range
-    
+
+    buffer_multipliers = [1.5, 2, 3, 4, 8, 12, 16, 32, 64, 128, 256, 512, 1024]  # Extended range
+
     for multiplier in buffer_multipliers:
         training_vocab_size = int(adjusted_target * multiplier)
         logging.info(f"Trying {multiplier}x buffer: training_vocab_size={training_vocab_size}")

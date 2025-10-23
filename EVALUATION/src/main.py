@@ -70,6 +70,13 @@ Examples:
         help='Target language (overrides config)'
     )
     
+    parser.add_argument(
+        '--model_name',
+        type=str,
+        default=None,
+        help='Model name or path (overrides config)'
+    )
+
     return parser.parse_args()
 
 
@@ -169,7 +176,7 @@ def main():
     logger.info("="*80)
     logger.info(f"Configuration file: {args.config}")
     logger.info(f"Output directory: {output_dir}")
-    logger.info(f"Log file: {log_file}")
+    # logger.info(f"Log file: {log_file}")
     
     try:
         # Log configuration

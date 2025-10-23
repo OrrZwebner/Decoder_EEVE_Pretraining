@@ -5,6 +5,7 @@ Optimized for RTX 3090 (24GB VRAM) with compilation fixes
 Location: /home/orrz/gpufs/projects/gemma3/src/train.py
 """
 
+
 import yaml
 import os
 import sys
@@ -12,11 +13,13 @@ import time
 import subprocess
 from datetime import datetime
 from pathlib import Path # Make sure Path is imported
-import logging
+# import logging
 import shutil
 import glob
 import argparse
-from pathlib import Path
+
+
+
 
 # import deepspeed
 # from transformers.integrations import HfDeepSpeedConfig
@@ -27,16 +30,6 @@ SCRIPT_DIR = Path(__file__).parent.absolute()  # /home/orrz/gpufs/projects/gemma
 PROJECT_ROOT = SCRIPT_DIR.parent.absolute()    # /home/orrz/gpufs/projects/gemma3
 # CONFIG_PATH = PROJECT_ROOT / 'gemma_config.yaml'
 
-# # Load config using absolute path
-# try:
-#     with open(CONFIG_PATH, 'r') as file:
-#         config = yaml.safe_load(file)
-#     print(f"✅ Config loaded from: {CONFIG_PATH}")
-# except FileNotFoundError:
-#     print(f"❌ Config file not found: {CONFIG_PATH}")
-#     print(f"Expected location: {CONFIG_PATH}")
-#     print(f"Current working directory: {os.getcwd()}")
-#     sys.exit(1)
 
 # # Initialize config variable
 global config
@@ -63,12 +56,25 @@ print(f"✅ Config loaded from: {config_path}")
 # Set environment variables IMMEDIATELY after loading config
 os.environ["CUDA_VISIBLE_DEVICES"] = str(config['environment']['cuda_visible_devices'])
 print(f"Setting CUDA_VISIBLE_DEVICES to: {os.environ['CUDA_VISIBLE_DEVICES']}")
-logging.info(f"Setting CUDA_VISIBLE_DEVICES to: {os.environ['CUDA_VISIBLE_DEVICES']}")
+
 os.environ["TORCH_COMPILE_DISABLE"] = str(config['environment']['torch_compile_disable']).lower()
 os.environ["PYTORCH_DISABLE_DYNAMO"] = str(config['environment']['pytorch_disable_dynamo']).lower()
 os.environ["HF_HOME"] = config['environment']['hf_home']
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
+
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('debug.log')
+    ],
+    force=True
+)
+logging.info(f"Setting CUDA_VISIBLE_DEVICES to: {os.environ['CUDA_VISIBLE_DEVICES']}")
+
 
 # Add src directory to Python path using absolute path
 if str(SCRIPT_DIR) not in sys.path:
@@ -76,6 +82,17 @@ if str(SCRIPT_DIR) not in sys.path:
 
 # Now import torch and other libraries after environment is set
 import torch
+
+
+# Verify CUDA sees only the intended GPU
+print(f"✅ PyTorch CUDA initialized")
+print(f"   Visible GPUs: {torch.cuda.device_count()}")
+if torch.cuda.is_available():
+    print(f"   GPU 0 (physical GPU {os.environ['CUDA_VISIBLE_DEVICES']}): {torch.cuda.get_device_name(0)}")
+    # Force CUDA initialization to lock in device visibility
+    _ = torch.zeros(1).cuda()
+    print(f"   CUDA context locked to visible devices")
+
 
 from pathlib import Path
 import wandb
@@ -89,6 +106,13 @@ from transformers import (
     TrainingArguments, 
     Trainer
 )
+from training_callbacks import SampleLoggingCallback, DataInspectionCallback, EpochBasedStoppingCallback
+from datasets import IterableDataset
+
+from pathlib import Path
+from peft import LoraConfig, get_peft_model
+import traceback
+
 
 def create_directories(config):
     """
@@ -155,6 +179,17 @@ def get_eeve_stage_config(config, stage: int) -> dict:
     # Get number of added tokens from vocabulary_generation config
     n_added_tokens = get_n_added_tokens(config)
     
+    # Handle 2-stage training
+    if stage in [1, 2] and config.get('two_stage_training', {}).get('enable', False):
+        stage_key = f'stage{stage}'
+        stage_cfg = config['two_stage_training'][stage_key]
+        return {
+            'train_layers': stage_cfg.get('train_layers', 'added_tokens_embeddings' if stage == 1 else 'all'),
+            'epochs': stage_cfg.get('epochs', 1),
+            'learning_rate': stage_cfg.get('learning_rate'),
+            'description': stage_cfg.get('description', f'Stage {stage}'),
+            'n_added_tokens': n_added_tokens
+        }
     return {
         'train_layers': train_layers,
         'epochs': stage_config.get('epochs', 1),
@@ -232,24 +267,23 @@ def create_training_arguments(config, stage_config: dict = None) -> TrainingArgu
         if stage_config.get('learning_rate'):
             learning_rate = stage_config['learning_rate']
 
-    # # Simple DeepSpeed check - just look for enable flag
-    # use_deepspeed = config.get('deepspeed', {}).get('enable', False)
-    # deepspeed_config_file = None
-
-    # if use_deepspeed:
-    #     # Use the config file path from YAML or default
-    #     deepspeed_config_file = config['deepspeed'].get(
-    #         'config_file', 
-    #         '/home/orrz/gpufs/projects/gemma3/deepspeed_config.json'
-    #     )
-    #     logging.info(f"🚀 DeepSpeed ENABLED - using config: {deepspeed_config_file}")
-    # else:
-    #     logging.info("DeepSpeed disabled - using standard training")
-
     # Ensure we have valid epochs value
     if num_epochs is None or num_epochs <= 0:
         logging.warning(f"Invalid epochs value: {num_epochs}, defaulting to 1")
         num_epochs = 1
+
+        # Handle max_steps for streaming datasets
+    max_steps = training_config.get('max_steps', -1)
+    data_config = config.get('data', {})
+    is_streaming = (
+        data_config.get('source_type') == 'huggingface' and 
+        data_config.get('hf_streaming', False)
+    )
+
+    if is_streaming and max_steps == -1:
+        max_steps = 1000000  # Default safety boundary for streaming
+        logging.info(f"🛡️ Streaming mode: set max_steps safety boundary to {max_steps:,}")
+
 
     # Prepare gradient checkpointing kwargs
     gradient_checkpointing_kwargs = None
@@ -277,6 +311,7 @@ def create_training_arguments(config, stage_config: dict = None) -> TrainingArgu
         
         # Training parameters
         num_train_epochs=num_epochs,
+        max_steps=max_steps,
         per_device_train_batch_size=training_config.get('per_device_train_batch_size', 16),
         per_device_eval_batch_size=training_config.get('per_device_eval_batch_size', 16),
         gradient_accumulation_steps=training_config.get('gradient_accumulation_steps', 8),
@@ -390,7 +425,7 @@ def print_training_summary(config, model, train_dataset, eval_dataset, stage: in
     
     print("\n" + "="*60)
     if stage > 0:
-        print(f"EEVE TRAINING SUMMARY - STAGE {stage}")
+        print(f"TRAINING SUMMARY - STAGE {stage}")
         if stage_config:
             print(f"Stage Description: {stage_config.get('description', 'N/A')}")
     else:
@@ -398,8 +433,25 @@ def print_training_summary(config, model, train_dataset, eval_dataset, stage: in
     print("="*60)
     
     print(f"Model: {config['model']['name']}")
-    print(f"Training samples: {len(train_dataset)}")
-    print(f"Evaluation samples: {len(eval_dataset)}")
+    # Handle streaming datasets (no len())
+    if isinstance(train_dataset, IterableDataset):
+        print(f"Training samples: Unknown (streaming mode)")
+        if config.get('debug', {}).get('test_mode', False):
+            limit = config.get('debug', {}).get('limit_train_samples', 0)
+            if limit > 0:
+                print(f"  Debug limit: {limit} samples")
+    else:
+        print(f"Training samples: {len(train_dataset):,}")
+    
+    if isinstance(eval_dataset, IterableDataset):
+        print(f"Evaluation samples: Unknown (streaming mode)")
+        if config.get('debug', {}).get('test_mode', False):
+            limit = config.get('debug', {}).get('limit_eval_samples', 0)
+            if limit > 0:
+                print(f"  Debug limit: {limit} samples")
+    else:
+        print(f"Evaluation samples: {len(eval_dataset):,}")
+    
     
     # Show training parameters
     epochs = stage_config.get('epochs', training_config['num_train_epochs']) if stage_config else training_config['num_train_epochs']
@@ -470,6 +522,38 @@ def train_single_stage(config, model, tokenizer, train_dataset, eval_dataset, da
     # Print training summary
     print_training_summary(config, model, train_dataset, eval_dataset, stage, stage_config)
     
+    # Create callbacks for detailed logging
+    callbacks = []
+
+    # Check if using streaming datasets
+    is_streaming = isinstance(train_dataset, IterableDataset)
+
+    # For streaming datasets, add epoch-based stopping callback
+    if is_streaming:
+        epochs = config['training'].get('num_train_epochs', 1)
+        if epochs is None or epochs <= 0:
+            logging.warning(f"Invalid epochs value: {epochs}, using default: 1")
+            epochs = 1
+        callbacks.append(EpochBasedStoppingCallback(num_epochs=epochs))
+        logging.info(f"✅ Added EpochBasedStoppingCallback (will stop after {epochs} epochs)")
+
+    if config.get('debug', {}).get('verbose_logging', False):
+        
+        if not is_streaming:
+            # Only add data inspection callback for non-streaming datasets
+            # (it consumes samples from the stream)
+            callbacks.append(DataInspectionCallback(tokenizer, num_samples=3))
+            logging.info("Added DataInspectionCallback (non-streaming mode)")
+        else:
+            logging.info("⚠️ Skipping DataInspectionCallback (streaming mode - would consume data)")
+        
+        # Add sample logging callback (works with streaming)
+        log_interval = config.get('logging', {}).get('sample_log_steps', 50)
+        #log how many interval steps
+        callbacks.append(SampleLoggingCallback(tokenizer, log_every_n_steps=log_interval))
+        logging.info(f"Added SampleLoggingCallback (every {log_interval} steps)")
+
+
     # Initialize trainer
     logging.info("Initializing trainer...")
     trainer = Trainer(
@@ -479,6 +563,7 @@ def train_single_stage(config, model, tokenizer, train_dataset, eval_dataset, da
         eval_dataset=eval_dataset,
         data_collator=data_collator,
         tokenizer=tokenizer,
+        callbacks=callbacks,
     )
 
     # Log initial memory usage
@@ -527,9 +612,56 @@ def train_single_stage(config, model, tokenizer, train_dataset, eval_dataset, da
         os.makedirs(save_path, exist_ok=True)
         
         logging.info(f"💾 Saving final model to {save_path}")
-        model.save_pretrained(save_path)
-        tokenizer.save_pretrained(save_path)
+        # model.save_pretrained(save_path)
+        # tokenizer.save_pretrained(save_path)
         
+        # Check if model is a PEFT model
+        lora_enabled = config.get('lora', {}).get('enable', False)
+        if lora_enabled:
+            # For LoRA: save adapters (and embedding layers if resized)
+            save_embedding_layers = config.get('lora', {}).get('save_embedding_layers', True)
+            model.save_pretrained(
+                save_path,
+                save_embedding_layers=save_embedding_layers
+            )
+            logging.info(f"   Saved LoRA adapters")
+            if save_embedding_layers:
+                logging.info(f"   Saved embedding layers (vocabulary was expanded)")
+            
+            # Save tokenizer for adapter model
+            try:
+                tokenizer.save_pretrained(save_path)
+                logging.info(f"   Saved tokenizer to adapter directory")
+            except Exception as e:
+                logging.warning(f"   Failed to save tokenizer: {e}")
+                logging.warning(f"   Tokenizer can be loaded from base model during inference")
+            
+            # Optionally merge and save full model
+            if config.get('lora', {}).get('merge_on_save', False):
+                logging.info(f"   Merging LoRA adapters into base model...")
+                merged_model = model.merge_and_unload()
+                merged_save_path = os.path.join(stage_base_dir, "merged_model")
+                os.makedirs(merged_save_path, exist_ok=True)
+                
+                # Save merged model
+                merged_model.save_pretrained(merged_save_path)
+                logging.info(f"   Saved merged model to {merged_save_path}")
+                
+                # Save tokenizer for merged model too
+                try:
+                    tokenizer.save_pretrained(merged_save_path)
+                    logging.info(f"   Saved tokenizer to merged model directory")
+                except Exception as e:
+                    logging.warning(f"   Failed to save tokenizer to merged dir: {e}")
+        else:
+            # For full model training
+            model.save_pretrained(save_path)
+            logging.info(f"   Saved full model")
+            
+            # Save tokenizer
+            tokenizer.save_pretrained(save_path)
+            logging.info(f"   Saved tokenizer")
+
         # Clean up checkpoints after saving final model
         checkpoint_pattern = os.path.join(stage_base_dir, "checkpoint-*")
         checkpoints = glob.glob(checkpoint_pattern)
@@ -552,6 +684,8 @@ def train_single_stage(config, model, tokenizer, train_dataset, eval_dataset, da
         
     except Exception as e:
         logging.error(f"❌ Stage {stage} training failed: {e}")
+        logging.error("Full traceback:")
+        logging.error(traceback.format_exc())
         raise
     
     finally:
@@ -579,6 +713,12 @@ def run_eeve_training(config) -> None:
     
     logging.info(f"🔄 Starting EEVE training: stages {start_stage} to {end_stage}")
     
+    # Warn about streaming datasets with EEVE
+    if config.get('data', {}).get('source_type') == 'huggingface' and \
+       config.get('data', {}).get('hf_streaming', False):
+        logging.warning("⚠️ Using streaming datasets with EEVE multi-stage training")
+        logging.warning("   Data will be reloaded for each stage (streaming iterators are consumed)")
+
     # Load data once (shared across all stages)
     logging.info("Loading data pipeline...")
     tokenizer = None  # Will be loaded with model in first stage
@@ -598,9 +738,10 @@ def run_eeve_training(config) -> None:
         load_from_previous = stage > start_stage
         model, tokenizer = load_model_pipeline(config, stage, load_from_previous)
         
-        # Load data if not already loaded or if tokenizer changed
-        if stage == start_stage or tokenizer is None:
-            train_dataset, eval_dataset, data_collator = load_data_pipeline(tokenizer, config)
+        # Load data
+        logging.info(f"Loading data pipeline for stage {stage}...")
+        train_dataset, eval_dataset, data_collator = load_data_pipeline(tokenizer, config)
+        
         
         # Train this stage
         save_path = train_single_stage(
@@ -610,6 +751,13 @@ def run_eeve_training(config) -> None:
         
         logging.info(f"✅ Stage {stage} completed. Model saved to: {save_path}")
         
+        # Clear references to datasets (especially important for streaming)
+        if isinstance(train_dataset, IterableDataset):
+            # For streaming datasets, explicitly delete references
+            del train_dataset
+            del eval_dataset
+            logging.info("Cleared streaming dataset references")
+
         # Clear GPU memory between stages
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -642,9 +790,73 @@ def run_standard_training(config) -> None:
 
 
 
+def run_2_stage_training(config) -> None:
+    """
+    2-stage training: embeddings → LoRA
+    """
+    logging.info("="*80)
+    logging.info("🚀 STARTING 2-STAGE TRAINING")
+    logging.info("="*80)
+    
+    config['_training_timestamp'] = datetime.now().strftime("%d-%m-%Y_%H%M")
+    
+    two_stage_config = config.get('two_stage_training', {})
+    stage1_config = two_stage_config.get('stage1', {})
+    stage2_config = two_stage_config.get('stage2', {})
+    
+    # STAGE 1: Train embeddings only
+    logging.info("\n📍 STAGE 1: Training New Token Embeddings")
+    stage1_config['stage'] = 1
+    
+    model, tokenizer = load_model_pipeline(config, stage=0)
+    train_dataset, eval_dataset, data_collator = load_data_pipeline(tokenizer, config)
+    
+    save_path_stage1 = train_single_stage(
+        config, model, tokenizer, train_dataset, eval_dataset, data_collator,
+        stage=1, stage_config=stage1_config
+    )
+    
+    logging.info(f"✅ Stage 1 completed: {save_path_stage1}")
+    
+    del model, train_dataset, eval_dataset
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    # STAGE 2: LoRA fine-tuning
+    logging.info("\n📍 STAGE 2: LoRA Fine-tuning")
+    stage2_config['stage'] = 2
+    
+    model, tokenizer = load_model_pipeline(config, stage=0, load_from_dir=save_path_stage1)
+    
+    # Apply LoRA
+    lora_cfg = config.get('lora', {})
+    peft_config = LoraConfig(
+        r=lora_cfg.get('r', 64),
+        lora_alpha=lora_cfg.get('lora_alpha', 128),
+        lora_dropout=lora_cfg.get('lora_dropout', 0.1),
+        bias=lora_cfg.get('bias', 'none'),
+        target_modules=lora_cfg.get('target_modules', ["q_proj", "k_proj", "v_proj", "o_proj"]),
+        task_type="CAUSAL_LM"
+    )
+    model = get_peft_model(model, peft_config)
+    logging.info(f"✅ LoRA applied: r={lora_cfg.get('r', 64)}")
+    
+    train_dataset, eval_dataset, data_collator = load_data_pipeline(tokenizer, config)
+    
+    save_path_stage2 = train_single_stage(
+        config, model, tokenizer, train_dataset, eval_dataset, data_collator,
+        stage=2, stage_config=stage2_config
+    )
+    
+    logging.info(f"✅ Stage 2 completed: {save_path_stage2}")
+    logging.info("🎉 2-STAGE TRAINING COMPLETE!")
+
+
+
 def create_temporary_sanskrit_config(config) -> str:
     """
     Create a temporary sanskrit_config.yaml file for the Tokenizers project.
+    Supports both local files and HuggingFace datasets.
     
     Args:
         config (dict): The main Gemma config dictionary
@@ -652,16 +864,52 @@ def create_temporary_sanskrit_config(config) -> str:
     Returns:
         str: Path to the temporary config file
     """
-
     
     # Create temporary config content based on Gemma config
     gen_config = config.get('vocabulary_generation', {})
     
-    temp_config = {
-        'data': {
-            'path': gen_config.get('data_path', config.get('data', {}).get('file_paths', [None])[0] if config.get('data', {}).get('file_paths') else '/home/orrz/gpufs/projects/gemma3/sanskrit_data'),
+    # ===== DATA CONFIGURATION =====
+    # Check for new nested structure first, then fall back to old structure
+    if 'data' in gen_config:
+        # New nested structure: vocabulary_generation.data
+        vocab_data_config = gen_config['data']
+    else:
+        # Old flat structure: backwards compatibility
+        vocab_data_config = {
+            'source_type': 'local_files',
+            'path': gen_config.get('data_path', 
+                   config.get('data', {}).get('file_paths', [None])[0] 
+                   if config.get('data', {}).get('file_paths') 
+                   else '/home/orrz/gpufs/projects/gemma3/sanskrit_data'),
             'debug': 0
-        },
+        }
+    
+    # Build the data config for Tokenizers project
+    tokenizer_data_config = {}
+    
+    source_type = vocab_data_config.get('source_type', 'local_files')
+    tokenizer_data_config['source_type'] = source_type
+    
+    if source_type == 'huggingface':
+        # HuggingFace dataset configuration
+        tokenizer_data_config.update({
+            'hf_dataset_name': vocab_data_config.get('hf_dataset_name'),
+            'hf_dataset_config': vocab_data_config.get('hf_dataset_config'),
+            'hf_text_column': vocab_data_config.get('hf_text_column', 'text'),
+            'hf_split': vocab_data_config.get('hf_split', 'train'),
+            'hf_streaming': vocab_data_config.get('hf_streaming', False),
+            'hf_trust_remote_code': vocab_data_config.get('hf_trust_remote_code', False),
+            'debug': vocab_data_config.get('debug', 0)
+        })
+    else:
+        # Local files configuration
+        tokenizer_data_config.update({
+            'path': vocab_data_config.get('path', '/home/orrz/gpufs/projects/gemma3/sanskrit_data'),
+            'debug': vocab_data_config.get('debug', 0)
+        })
+    
+    temp_config = {
+        'data': tokenizer_data_config,
         'training': {
             'num_samples': -1,
             'num_new_tokens': gen_config.get('num_tokens', 2048),
@@ -789,39 +1037,14 @@ def run_vocabulary_generation(config):
         logging.error(f"--- STDERR ---\n{e.stderr.strip()}")
         raise RuntimeError("Vocabulary generation failed, stopping training process.")
     
-    # finally:
-        # Clean up temporary config file
-        # try:
-        #     if os.path.exists(temp_config_path):
-        #         os.remove(temp_config_path)
-        #         logging.info(f"🧹 Cleaned up temporary config: {temp_config_path}")
-        # except Exception as e:
-        #     logging.warning(f"⚠️ Failed to clean up temporary config: {e}")
-    
 
 def main():
     """Main training function with EEVE support"""
+
     
+
     print("Starting Gemma-3 Sanskrit Continual Pretraining with EEVE Support...")
     print("="*60)
-    
-    # # Add argument parser for config file
-    # parser = argparse.ArgumentParser(description='Gemma-3 Sanskrit Training')
-    # parser.add_argument('--config', type=str, default='gemma_config.yaml',
-    #                    help='Path to configuration file (default: gemma_config.yaml)')
-    # args = parser.parse_args()
-    
-    # # Load config from specified file
-    # global config
-    # config_path = Path(args.config)
-    # if not config_path.exists():
-    #     print(f"❌ Config file not found: {config_path}")
-    #     sys.exit(1)
-    
-    # with open(config_path, 'r') as file:
-    #     config = yaml.safe_load(file)
-    # print(f"✅ Config loaded from: {config_path}")
-
 
     try:
         # Create necessary directories
@@ -832,12 +1055,13 @@ def main():
         # Run vocabulary generation if enabled
         if config.get('vocabulary_generation', {}).get('enable', False):
             logging.info("🔄 Running vocabulary generation...")
-            print("🔄 Running vocabulary generation...")
             run_vocabulary_generation(config)
             logging.info("✅ Vocabulary generation completed (if enabled)")
         
         # Determine training mode
-        if config.get('eeve', {}).get('enable', False):
+        if config.get('two_stage_training', {}).get('enable', False):
+            run_2_stage_training(config)
+        elif config.get('eeve', {}).get('enable', False):
             run_eeve_training(config)
         else:
             run_standard_training(config)
@@ -871,15 +1095,15 @@ if __name__ == "__main__":
     # Set up basic logging before loading config
     print(f'{"="*60}')
     print(f' Starting Gemma-3 Sanskrit Training Script at {datetime.now().strftime("%d-%m-%Y %H:%M")}')
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[
-            logging.StreamHandler(sys.stdout),  # Force stdoutd
-            logging.FileHandler('debug.log')     # Also save to file
-        ],
-        force=True  # Override any existing configuration
-    )
+    # logging.basicConfig(
+    #     level=logging.INFO,
+    #     format='%(asctime)s - %(levelname)s - %(message)s',
+    #     handlers=[
+    #         logging.StreamHandler(sys.stdout),  # Force stdoutd
+    #         logging.FileHandler('debug.log')     # Also save to file
+    #     ],
+    #     force=True  # Override any existing configuration
+    # )
     
     # Force flush after each log
     for handler in logging.root.handlers:
@@ -894,7 +1118,9 @@ if __name__ == "__main__":
     print(f"PyTorch version: {torch.__version__}")
     if torch.cuda.is_available():
         print(f"CUDA available: {torch.cuda.device_count()} devices")
-        print(f"Current CUDA device: {torch.cuda.current_device()}")
+        # print(f"Current CUDA device: {torch.cuda.current_device()}")
+        print(f"Current CUDA device name: {os.environ['CUDA_VISIBLE_DEVICES']}")
+        print(f"GPU memory at start: {torch.cuda.memory_reserved() / 1024**3:.2f} GB reserved")
     else:
         print("⚠️  CUDA not available - will use CPU")
     

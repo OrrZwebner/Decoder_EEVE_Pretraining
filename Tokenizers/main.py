@@ -22,6 +22,10 @@ from pathlib import Path
 from typing import Dict, Any, List, Union
 from datetime import datetime
 
+# Import HuggingFace datasets support
+from datasets import load_dataset, IterableDataset, DatasetDict, IterableDatasetDict
+
+
 # Import our custom modules
 from tokenizer_trainers import train_with_target_size
 from model_processors import get_processor
@@ -67,23 +71,148 @@ def setup_logging(log_dir: str, log_level: str = "INFO") -> logging.Logger:
     return logger
 
 
-def load_sanskrit_data(data_path: str, debug: int, seed=42) -> List[str]:
+def load_huggingface_data(config: Dict[str, Any], debug: int, seed: int = 42) -> List[str]:
     """
-    Load Sanskrit data from a specified absolute path.
-    
-    Supports reading .jsonl, .txt, and .pkl files from either a single
-    file or a directory. Assumes `data_path` is an absolute path.
+    Load Sanskrit data from HuggingFace Hub.
     
     Args:
-        data_path (str): The absolute path to the data file or directory.
+        config (Dict[str, Any]): Full configuration dictionary
+        debug (int): If > 0, sample a debug subset of texts
+        seed (int): Random seed for reproducibility
+    
+    Returns:
+        List[str]: A list of Sanskrit text strings
+    """
+    logger = logging.getLogger(__name__)
+    data_config = config.get('data', {})
+    
+    dataset_name = data_config.get('hf_dataset_name')
+    dataset_config = data_config.get('hf_dataset_config')
+    split = data_config.get('hf_split', 'train')
+    streaming = data_config.get('hf_streaming', False)
+    trust_remote_code = data_config.get('hf_trust_remote_code', False)
+    text_column = data_config.get('hf_text_column', 'text')
+    
+    if not dataset_name:
+        raise ValueError("hf_dataset_name must be specified when source_type is 'huggingface'")
+    
+    # Handle "auto" or None to load all splits
+    if split in ['auto', None]:
+        load_split = None
+        logger.info(f"Loading HuggingFace dataset: {dataset_name}")
+        if dataset_config:
+            logger.info(f"  Config/subset: {dataset_config}")
+        logger.info(f"  Split: ALL (loading all available splits)")
+    else:
+        load_split = split
+        logger.info(f"Loading HuggingFace dataset: {dataset_name}")
+        if dataset_config:
+            logger.info(f"  Config/subset: {dataset_config}")
+        logger.info(f"  Split: {split}")
+    
+    logger.info(f"  Streaming: {streaming}")
+    
+    try:
+        # Load dataset
+        dataset = load_dataset(
+            dataset_name,
+            name=dataset_config,
+            split=load_split,
+            streaming=streaming,
+            trust_remote_code=trust_remote_code
+        )
+        
+        logger.info(f"✅ Successfully loaded dataset from HuggingFace Hub")
+        
+# Extract texts from the dataset
+        texts = []
+        max_samples = debug if debug > 0 else None
+        
+        # Handle different dataset types
+        if isinstance(dataset, (IterableDataset, IterableDatasetDict)):
+            logger.info("Processing streaming dataset...")
+            
+            # ✅ OPTIMIZATION: Use .take() to limit the stream BEFORE iterating
+            if max_samples:
+                logger.info(f"  Limiting stream to first {max_samples:,} samples")
+                dataset = dataset.take(max_samples)
+            
+            # Now iterate only through the limited stream
+            count = 0
+            for example in dataset:
+                if text_column in example:
+                    text = str(example[text_column]).strip()
+                    if text:
+                        texts.append(text)
+                        count += 1
+                        # Log progress less frequently for efficiency
+                        if count % 10000 == 0:
+                            logger.info(f"  Loaded {count:,} texts...")
+            
+            logger.info(f"  Finished loading {count:,} texts from stream")
+            
+        else:
+            logger.info("Processing non-streaming dataset...")
+            # Regular dataset or DatasetDict
+            if isinstance(dataset, DatasetDict):
+                dataset = dataset[split]
+            
+            # ✅ OPTIMIZATION: Use .select() to sample BEFORE extracting
+            original_size = len(dataset)
+            if max_samples and original_size > max_samples:
+                logger.info(f"  Sampling {max_samples:,} from {original_size:,} total samples")
+                # Random sampling for better representation
+                import random
+                random.seed(seed)
+                indices = random.sample(range(original_size), max_samples)
+                dataset = dataset.select(indices)
+            else:
+                logger.info(f"  Using all {original_size:,} samples")
+            
+            # Extract texts from the already-sampled dataset
+            for example in dataset:
+                if text_column in example:
+                    text = str(example[text_column]).strip()
+                    if text:
+                        texts.append(text)
+        
+        if not texts:
+            raise ValueError(f"No texts found in dataset. Check text_column: '{text_column}'")
+        
+        logger.info(f"✅ Loaded {len(texts):,} texts from HuggingFace dataset")
+        return texts
+        
+    except Exception as e:
+        logger.error(f"Error loading HuggingFace dataset {dataset_name}: {e}")
+        raise
+
+
+def load_sanskrit_data(data_path: str, debug: int, seed=42, config: Dict[str, Any] = None) -> List[str]:
+    """
+    Load Sanskrit data from a specified absolute path or HuggingFace Hub.
+    
+    Supports reading .jsonl, .txt, and .pkl files from either a single
+    file or a directory. Also supports loading from HuggingFace datasets
+    if source_type is 'huggingface' in config.
+    
+    Args:
+        data_path (str): The absolute path to the data file or directory (for local files).
         debug (int): If > 0, sample a debug subset of texts.
         seed (int): Random seed for reproducibility.
+        config (Dict[str, Any]): Configuration dictionary (needed for HF datasets).
     
     Returns:
         List[str]: A list of Sanskrit text strings.
     """
     logger = logging.getLogger(__name__)
-    logger.info(f"Loading Sanskrit data from absolute path: {data_path}")
+    
+    # Check if we should load from HuggingFace
+    if config and config.get('data', {}).get('source_type') == 'huggingface':
+        logger.info("Loading data from HuggingFace Hub...")
+        return load_huggingface_data(config, debug, seed)
+    
+    # Otherwise, use local file loading
+    logger.info(f"Loading Sanskrit data from local path: {data_path}")
     
     # SIMPLIFIED: We now assume an absolute path is provided.
     data_path = Path(data_path)
@@ -439,15 +568,53 @@ def main() -> int:
     log_dir = config.get('logging', {}).get('log_dir', 'logs/tokenizers')
     logger = setup_logging(log_dir, args.log_level)
     
+    # # Load Sanskrit data
+    # data_path = config.get('data', {}).get('path')
+    # debug = config.get('data', {}).get('debug', 0)
+    # if not data_path:
+    #     logger.error("❌ No data path specified in config file under 'data.path'")
+    #     return 1
+
     # Load Sanskrit data
-    data_path = config.get('data', {}).get('path')
-    debug = config.get('data', {}).get('debug', 0)
-    if not data_path:
-        logger.error("❌ No data path specified in config file under 'data.path'")
+    # Support both old flat structure and new nested structure for vocabulary_generation
+    if 'vocabulary_generation' in config and 'data' in config['vocabulary_generation']:
+        # New nested structure: vocabulary_generation.data
+        data_config = config['vocabulary_generation']['data']
+        data_path = data_config.get('path')
+        debug = data_config.get('debug', 0)
+    else:
+        # Old flat structure: data.path (for backwards compatibility)
+        data_config = config.get('data', {})
+        data_path = data_config.get('path')
+        debug = data_config.get('debug', 0)
+    
+    # For HF datasets, we don't need data_path
+    source_type = data_config.get('source_type', 'local_files')
+    if source_type == 'local_files' and not data_path:
+        logger.error("❌ No data path specified in config file")
+        logger.error("   For local files: Set 'vocabulary_generation.data.path'")
+        logger.error("   For HuggingFace: Set 'vocabulary_generation.data.source_type: huggingface'")
         return 1
     
     try:
-        texts = load_sanskrit_data(data_path, debug, seed=config.get('random_seed', 42))
+        # texts = load_sanskrit_data(data_path, debug, seed=config.get('random_seed', 42))
+        # Create a temporary config for data loading that uses the vocabulary_generation data settings
+        if 'vocabulary_generation' in config and 'data' in config['vocabulary_generation']:
+            # Use vocabulary_generation data config
+            data_loading_config = {
+                'data': config['vocabulary_generation']['data'],
+                'random_seed': config.get('random_seed', 42)
+            }
+        else:
+            # Use main data config (backwards compatibility)
+            data_loading_config = config
+        
+        texts = load_sanskrit_data(
+            data_path if data_path else '', 
+            debug, 
+            seed=config.get('random_seed', 42), 
+            config=data_loading_config
+        )
     except Exception as e:
         logger.error(f"❌ Failed to load Sanskrit data: {e}")
         return 1

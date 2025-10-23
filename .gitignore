@@ -10,6 +10,9 @@ gemma3/outputs/
 gemma3/sanskrit_data/
 gemma3/wandb/
 gemma3/src/__pycache__/
+gemma3/temp_clone/
+gemma3/tib_data/
+gemma3/=20.0
 
 # Tokenizers/
 Tokenizers/__pycache__/
@@ -24,6 +27,7 @@ Tokenizers/vocabularies/
 EVALUATION/logs/
 EVALUATION/results/
 EVALUATION/src/__pycache__/
+EVALUATION/configs/
 
 # Log files
 *.log
@@ -39,3 +43,6 @@ EVALUATION/src/__pycache__/
 
 # Temporary files
 *.pid
+
+model-evaluation/
+verse-extraction/

@@ -2,21 +2,29 @@
 # Location: /home/orrz/gpufs/projects/gemma3/gemma_config.yaml
 # Updated for dictionary-style access matching train.py
 
+# use throguh:
+# 1. python src/train.py 
+# or
+# 2. bash ./train_multiple_tokens.sh
+
+# update vocabulary_full_path acording to the data and model (will be fixed)
+
 # ===== PROJECT PATHS =====
 project:
   # name: "gemma3-sanskrit-iast-pretraining_no_eeve"
-  name: "gemma3-tib-wilie-pretraining_no_eeve"
+  # name: "gemma3-tib-wilie-pretraining_no_eeve"
+  name: "gemma3-hebrew-1k-pretraining_no_eeve"
   root_dir: "/home/orrz/gpufs/projects/gemma3"
   # data_dir: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
-  data_dir: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
+  # data_dir: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
   logs_dir: "/home/orrz/gpufs/projects/gemma3/logs"
   output_dir: "/home/orrz/gpufs/projects/gemma3/outputs/no_stages"  # Default output directory for single-stage training
 # ===== ENVIRONMENT SETTINGS =====
 environment:
   # cuda_visible_devices: 0  # Use GPU 3 (as specified in your config)
-  cuda_visible_devices: "1"  # Use GPU 1 (as specified in your config)
+  cuda_visible_devices: "0,1,2"  # Use GPU 1 (as specified in your config)
   # cuda_visible_devices: "2"  # Use GPU 1 (as specified in your config)
-  # cuda_visible_devices: "3"  # Use GPU 1 (as specified in your config)
+  # cuda_visible_devices: "1,2,3"  # Use GPU 1 (as specified in your config)
   torch_compile_disable: true
   pytorch_disable_dynamo: true
   hf_home: "/home/orrz/gpufs/hf/.cache/huggingface"
@@ -52,6 +60,10 @@ tokenizer:
 
 # ===== DATA CONFIGURATION =====
 data:
+  # Choose source type
+  source_type: "huggingface"  
+  # source_type: "local_files"
+
   # Data file paths (absolute paths)
   file_paths:
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.txt"
@@ -71,11 +83,18 @@ data:
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_4.jsonl"
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_5.jsonl"
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_6.jsonl"
-    
-    
 
+
+  # For HuggingFace datasets - make sure to adjust the vocabulary_generation as well
+  hf_dataset_name: "cc100"  # Example
+  hf_dataset_config: "he"  # or specify subset name
+  hf_text_column: "text"  # Column containing the text
+  hf_split: "auto"  # Which split to load ("train", "validation", or "auto" for all)
+  hf_streaming: true  # Enable for very large datasets
   
+  hf_trust_remote_code: true  # Set true if dataset requires custom code
   # Train/eval split
+  hf_eval_size: 5000  # Take exactly 5000 samples for eval. For streaming datasets only when there is no validation split.
   eval_split_ratio: 0.1
   random_seed: 42
   
@@ -83,6 +102,53 @@ data:
   use_fallback: true
   fallback_multiplier: 10  # Repeat fallback data N times
 
+# ===== VOCABULARY GENERATION CONFIGURATION =====
+vocabulary_generation:
+  # Set to true to run the tokenizer script automatically before training starts.
+  enable: true 
+  
+  # The full, absolute path to the tokenizer project's main script.
+  script_path: "/home/orrz/gpufs/projects/Tokenizers/main.py"
+  
+  # Parameters to use when generating the vocabulary.
+  model_target: "gemma"
+  algorithm_target: "sentencepiece_bpe"
+  # algorithm_target: "sentencepiece_unigram"
+  
+  # Data path for the Tokenizers project (should match your Sanskrit data)
+  # This tells the Tokenizers project where to find the Sanskrit training data
+  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
+  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/sanskrit_iast_ready_512.txt"
+  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
+  data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
+  
+  # Number of tokens to generate
+  # num_tokens: 16
+  # num_tokens: 2048
+  num_tokens: 4096  # Number of tokens to generate for the vocabulary
+  
+  data:
+    # Data source type: "local_files" or "huggingface"
+    # source_type: "local_files"
+    source_type: "huggingface"
+    
+    # FOR LOCAL FILES:
+    # Absolute path to the data file or directory
+    path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
+    
+    # FOR HUGGINGFACE DATASETS:
+    # HuggingFace dataset configuration (used when source_type is "huggingface")
+    hf_dataset_name: "cc100"
+    hf_dataset_config: "he"  # Language/subset code
+    hf_text_column: "text"
+    hf_split: "train"
+    hf_streaming: true
+    hf_trust_remote_code: false
+    
+    # Debug/sampling settings (applies to both local and HF)
+    debug: 5000  # 0 = use all data, >0 = sample N texts for quick testing
+
+  
 
 # ===== CUSTOM VOCABULARY CONFIGURATION =====
 vocabulary:
@@ -103,6 +169,8 @@ vocabulary:
   
   # Resize model embeddings to accommodate new tokens
   resize_model_embeddings: true
+
+  embedding_init_method: "mean"  # Options: "mean", "random"
   
   # Wether to vecose logging during vocabulary expansion
   debug_vocabulary: true
@@ -112,8 +180,9 @@ vocabulary:
   # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
   # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
   # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit/spm_bpe/"
-  vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit_iast/spm_bpe/"
+  # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit_iast/spm_bpe/"
   # vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/sanskrit_devanagari/spm_bpe/"
+  vocabulary_full_path: "/home/orrz/gpufs/projects/Tokenizers/vocabularies/hebrew/spm_bpe/"
 
 # ===== TRAINING CONFIGURATION =====
 training:
@@ -130,10 +199,14 @@ training:
   
   
   # Optimization settings
-  learning_rate: 0.00005  # 5e-5
+  # learning_rate: 0.00005  # 5e-5
+  learning_rate: 0.0001  # 1e-4 (for lora)
   warmup_steps: 50
   optimizer: "adafactor"  # Options: adamw_torch, adafactor
   
+  # Safety boundary for streaming datasets
+  max_steps: -1  # -1 = use epochs, positive number = use max_steps
+
   # Memory optimization
   gradient_checkpointing: true # Enable gradient checkpointing for memory efficiency
   gradient_checkpointing_kwargs:
@@ -192,7 +265,7 @@ eeve:
       train_layers: "hidden_layers"
       epochs: 1
       description: "Train transformer layers only"
-  
+
   # Model saving between stages
   save_intermediate_stages: true
   stage_output_dir: "/home/orrz/gpufs/projects/gemma3/outputs/eeve_stages"  # Directory for stage checkpoints
@@ -202,6 +275,24 @@ eeve:
   # Examples from your pattern:
   # run_name: "ru_bpe_2k_7_stages_2.0"
   # run_name: "sanskrit_custom_tokens_eeve"
+
+# ===== 2-STAGE TRAINING CONFIGURATION =====
+two_stage_training:
+  enable: true  # Set to true to enable 2-stage training
+  
+  stage1:
+    # Stage 1: Train only new token embeddings
+    train_layers: "added_tokens_embeddings"
+    epochs: 1
+    learning_rate: 5e-5
+    description: "Stage 1: Train new token embeddings only"
+  
+  stage2:
+    # Stage 2: LoRA fine-tuning (uses lora config from above)
+    epochs: 2
+    learning_rate: 1e-5
+    description: "Stage 2: LoRA fine-tuning"
+
 
 # ===== SAVING & EVALUATION =====
 checkpointing:
@@ -222,6 +313,7 @@ logging:
   logging_strategy: "steps"
   logging_first_step: true
   logging_nan_inf_filter: true
+  sample_log_steps: 1  # Log sample outputs every N steps
   
   # Wandb configuration
   use_wandb: true
@@ -249,6 +341,17 @@ deepspeed:
   config_file: "/home/orrz/gpufs/projects/gemma3/deepspeed_config.json"
   # config_file: "/home/orrz/gpufs/projects/gemma3/deepspeed_config.yaml"
 
+lora:
+  # enable: false  # Set to true to use LoRA
+  enable: true  # Set to true to use LoRA
+  r: 64 # Rank - smaller = more efficient, larger = more expressive
+  lora_alpha: 128 # Scaling factor (usually 2*r)
+  lora_dropout: 0.1 # Dropout for LoRA layers (to prevent overfitting)
+  bias: "none" # Options: none, all, lora_only
+  target_modules: ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"] # Target modules for LoRA
+  task_type: "CAUSAL_LM" # Task type (CAUSAL_LM for language modeling)
+  save_embedding_layers: true
+  merge_on_save: true
 
 # ===== COMPATIBILITY FIXES =====
 compatibility:
@@ -263,48 +366,21 @@ debug:
   verbose_logging: true
   print_model_info: true
   print_dataset_info: true
-  test_mode: false  # Set to true for quick testing runs
-  # test_mode: true  # Set to true for quick testing runs
+  # test_mode: false  # Set to true for quick testing runs
+  test_mode: true  # Set to true for quick testing runs
+
+  
   
   # Data limiting for quick testing
   # limit_train_samples: 0  # 0 = no limit, >0 = limit to N samples
   # limit_eval_samples: 0   # 0 = no limit, >0 = limit to N samples
 
-  # limit_train_samples: 128  
-  # limit_eval_samples: 32   # Limit eval samples for quick testing
+  limit_train_samples: 128 
+  limit_eval_samples: 32   # Limit eval samples for quick testing
+
+  # limit_train_samples: 1024 
+  # limit_eval_samples: 128   # Limit eval samples for quick testing
   
   # Training overrides for testing
   # test_epochs: 1          # Override epochs when test_mode is true
   # test_batch_size: 4      # Override batch size when test_mode is true
-
-
-
-# ===== VOCABULARY GENERATION CONFIGURATION =====
-vocabulary_generation:
-  # Set to true to run the tokenizer script automatically before training starts.
-  enable: true 
-  
-  # The full, absolute path to the tokenizer project's main script.
-  script_path: "/home/orrz/gpufs/projects/Tokenizers/main.py"
-  
-  # Parameters to use when generating the vocabulary.
-  model_target: "gemma"
-  algorithm_target: "sentencepiece_bpe"
-  # algorithm_target: "sentencepiece_unigram"
-  
-  # Data path for the Tokenizers project (should match your Sanskrit data)
-  # This tells the Tokenizers project where to find the Sanskrit training data
-  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
-  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/sanskrit_iast_ready_512.txt"
-  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
-  data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
-  
-  # Number of tokens to generate
-  # num_tokens: 16
-  # num_tokens: 2048
-  num_tokens: 4096  # Number of tokens to generate for the vocabulary
-
-  # use_existing_vocabulary: false # Set to true to use existing vocabulary instead of generating a new one
-
-
-  

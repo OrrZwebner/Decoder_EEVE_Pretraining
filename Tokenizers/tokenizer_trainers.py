@@ -12,7 +12,8 @@ tokens are returned for each algorithm.
 import tempfile
 import os
 import logging
-from typing import List, Tuple, Any, Dict
+import json
+from typing import List, Tuple, Any, Dict, Optional
 from transformers import AutoTokenizer
 from tokenizers import Tokenizer
 from tokenizers.models import BPE, WordPiece, Unigram
@@ -25,7 +26,7 @@ import pandas as pd
 from log_score_evaluator import LogScoreEvaluator
 
 
-def train_bpe_tokenizer(texts: List[str], vocab_size: int) -> Tuple[List[str], bool]:
+def train_bpe_tokenizer(texts: List[str], vocab_size: int) -> Tuple[List[str], List[str], bool]:
     """
     Train BPE (Byte Pair Encoding) tokenizer on Sanskrit texts.
     
@@ -37,7 +38,7 @@ def train_bpe_tokenizer(texts: List[str], vocab_size: int) -> Tuple[List[str], b
         vocab_size (int): Target vocabulary size for training
     
     Returns:
-        Tuple[List[str], bool]: (learned_tokens, success_flag)
+        Tuple[List[str], List[str], bool]: (learned_tokens, merges, success_flag)
     """
     try:
         logging.info(f"Training BPE tokenizer with vocab_size={vocab_size}")
@@ -63,12 +64,21 @@ def train_bpe_tokenizer(texts: List[str], vocab_size: int) -> Tuple[List[str], b
             if token not in ["<unk>"] and len(token.strip()) > 0:
                 learned_tokens.append(token)
         
-        logging.info(f"BPE training completed: {len(learned_tokens)} tokens learned")
-        return learned_tokens, True
+        # Extract merges from tokenizer by serializing to JSON
+        try:
+            tokenizer_json_str = tokenizer.to_str()
+            tokenizer_json = json.loads(tokenizer_json_str)
+            merges = tokenizer_json.get('model', {}).get('merges', [])
+            logging.info(f"BPE training completed: {len(learned_tokens)} tokens learned, {len(merges)} merges extracted")
+        except Exception as e:
+            logging.warning(f"Failed to extract merges from BPE tokenizer: {e}")
+            merges = []
+        
+        return learned_tokens, merges, True
         
     except Exception as e:
         logging.error(f"BPE training failed: {e}")
-        return [], False
+        return [], [], False
 
 def train_log_score_tokenizer(texts: List[str], vocab_size: int, original_tokenizer: Tokenizer) -> Tuple[List[str], bool]:
     """
@@ -400,11 +410,12 @@ def get_unique_tokens(learned_tokens: List[str], target_tokenizer: Any,
 
 def train_with_target_size(texts: List[str], algorithm: str, target_size: int, 
                          model_name: str, model_config: Dict[str, Any], 
-                         unigram_max_iterations: int, tokenizer: Tokenizer = None) -> Tuple[List[str], bool]:
+                         unigram_max_iterations: int, tokenizer: Tokenizer = None) -> Tuple[List[str], Optional[List[str]], bool]:
     """
     Train tokenizer to get exactly target_size unique tokens after processing.
     
     UPDATED: Now accepts model_config instead of hardcoded model names.
+    UPDATED: Returns merges for BPE algorithm.
     
     Args:
         texts (List[str]): Sanskrit texts for training
@@ -416,10 +427,19 @@ def train_with_target_size(texts: List[str], algorithm: str, target_size: int,
         tokenizer (Tokenizer, optional): Pre-trained tokenizer to use for log-score or other algorithms
     
     Returns:
-        Tuple[List[str], bool]: (exactly target_size tokens, success_flag)
+        Tuple[List[str], Optional[List[str]], bool]: (exactly target_size tokens, merges (for BPE only), success_flag)
     """
 
     logging.info(f"Training {algorithm} to get exactly {target_size} unique tokens for {model_name}")
+    
+    # For BPE algorithm, skip training here - just return the corpus
+    # Training will happen in expand_tokenizer() using train_new_from_iterator
+    if algorithm.lower() == "bpe":
+        logging.info(f"BPE: Skipping training in tokenizer_trainers, returning corpus for training in expand_tokenizer()")
+        logging.info(f"   Corpus size: {len(texts)} texts")
+        # Return corpus as "tokens" placeholder (will be ignored), None for merges, True for success
+        # The actual training will happen in expand_tokenizer with the corpus
+        return texts, None, True
     
     # Load target model tokenizer dynamically from config
     try:
@@ -427,11 +447,12 @@ def train_with_target_size(texts: List[str], algorithm: str, target_size: int,
         logging.info(f"Loaded tokenizer: {model_config['model_name']}")
     except Exception as e:
         logging.error(f"Failed to load tokenizer {model_config['model_name']}: {e}")
-        return [], False
+        return [], None, False
     
     # For Unigram algorithms, use iterative training approach
     if "unigram" in algorithm.lower():
-        return _train_unigram_iterative(texts, algorithm, target_size, target_tokenizer, model_name, max_iterations=unigram_max_iterations)
+        tokens, success = _train_unigram_iterative(texts, algorithm, target_size, target_tokenizer, model_name, max_iterations=unigram_max_iterations)
+        return tokens, None, success
     
     # Estimate processing loss rate for WordPiece
     processing_loss_rate = 0.15 if algorithm.lower() == "wordpiece" else 0.0  # 15% loss due to duplicates after ## removal
@@ -447,9 +468,7 @@ def train_with_target_size(texts: List[str], algorithm: str, target_size: int,
         
         try:
             # Train with current buffer size
-            if algorithm.lower() == "bpe":
-                learned_tokens, success = train_bpe_tokenizer(texts, training_vocab_size)
-            elif algorithm.lower() == "wordpiece":
+            if algorithm.lower() == "wordpiece":
                 learned_tokens, success = train_wordpiece_tokenizer(texts, training_vocab_size)
             elif algorithm.lower().startswith("sentencepiece"):
                 model_type = algorithm.split("_")[1] if "_" in algorithm else "bpe"
@@ -458,7 +477,7 @@ def train_with_target_size(texts: List[str], algorithm: str, target_size: int,
                 learned_tokens, success = train_log_score_tokenizer(texts, training_vocab_size, tokenizer)
             else:
                 logging.error(f"Unknown algorithm: {algorithm}")
-                return [], False
+                return [], None, False
             
             if not success:
                 logging.warning(f"Training failed with {multiplier}x buffer")
@@ -500,7 +519,8 @@ def train_with_target_size(texts: List[str], algorithm: str, target_size: int,
                     final_tokens = unique_tokens[:target_size]
                 
                 logging.info(f"✅ SUCCESS: Got {len(final_tokens)} tokens that will yield exactly {target_size} after processing")
-                return final_tokens, True
+                # Return tokens and None for merges (merges only for BPE which is handled earlier)
+                return final_tokens, None, True
             else:
                 logging.info(f"Insufficient: {final_usable}/{target_size} final usable tokens, trying larger buffer...")
                 
@@ -509,7 +529,7 @@ def train_with_target_size(texts: List[str], algorithm: str, target_size: int,
             continue
     
     logging.error(f"COMPLETE FAILURE: Could not generate {target_size} usable tokens for {algorithm} + {model_name}")
-    return [], False
+    return [], None, False
 
 
 def _train_unigram_iterative(texts: List[str], algorithm: str, target_size: int,

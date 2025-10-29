@@ -286,8 +286,8 @@ def run_comparison_pipeline(config: Dict[str, Any], texts: List[str], logger: lo
             logger.info(f"{'='*60}")
             
             try:
-                # Step 4a: Train tokenizer
-                sanskrit_tokens, success = train_with_target_size(
+                # Step 4a: Train tokenizer (for BPE, this just returns the corpus)
+                sanskrit_tokens_or_corpus, merges, success = train_with_target_size(
                     texts=training_texts, algorithm=algorithm, 
                     target_size=config['training']['num_new_tokens'], model_name=model_name.upper(),
                     model_config=model_config,
@@ -299,9 +299,19 @@ def run_comparison_pipeline(config: Dict[str, Any], texts: List[str], logger: lo
                     continue
                 
                 # Step 4b: Expand model tokenizer
-                expanded_tokenizer, tokens_added, processed_tokens = processor.expand_tokenizer(
-                    sanskrit_tokens, algorithm.upper(), config['training']['num_new_tokens']
-                )
+                # For BPE, sanskrit_tokens_or_corpus is actually the corpus
+                # For other algorithms, it's the learned tokens
+                if algorithm.upper() == "BPE":
+                    # For BPE, pass corpus for training in expand_tokenizer
+                    expanded_tokenizer, tokens_added, processed_tokens = processor.expand_tokenizer(
+                        [], algorithm.upper(), config['training']['num_new_tokens'], 
+                        training_corpus=sanskrit_tokens_or_corpus
+                    )
+                else:
+                    # For non-BPE, pass learned tokens
+                    expanded_tokenizer, tokens_added, processed_tokens = processor.expand_tokenizer(
+                        sanskrit_tokens_or_corpus, algorithm.upper(), config['training']['num_new_tokens']
+                    )
                 
                 # --- START OF NEW LOG-SCORE CALCULATION ---
                 log_score = 0.0
@@ -494,7 +504,7 @@ def main() -> int:
                     output_file = os.path.join(vocabularies_dir, vocab_filename)
                 
                 # Step 1: Train to get the raw Sanskrit tokens
-                raw_tokens, success = train_with_target_size(
+                raw_tokens_or_corpus, merges, success = train_with_target_size(
                     texts=training_texts,
                     algorithm=algorithm,
                     target_size=config['training']['num_new_tokens'],
@@ -509,15 +519,26 @@ def main() -> int:
                 
 
 
-                # Step 2: Process the raw tokens for the target model
-                logger.info(f"Processing {len(raw_tokens)} raw tokens for model '{model_name}'...")
                 processor = get_processor(model_name, model_config)
-                processed_tokens = processor.process_tokens_for_model(raw_tokens, algorithm)
                 
-                # Step 2b: Expand model tokenizer for metrics calculation
-                expanded_tokenizer, tokens_added, _ = processor.expand_tokenizer(
-                    raw_tokens, algorithm.upper(), config['training']['num_new_tokens']
-                )
+                # Step 2: Expand model tokenizer
+                # For BPE, raw_tokens_or_corpus is the corpus
+                # For other algorithms, it's the learned tokens
+                if algorithm.upper() == "BPE":
+                    # For BPE, training happens in expand_tokenizer
+                    expanded_tokenizer, tokens_added, processed_tokens = processor.expand_tokenizer(
+                        [], algorithm.upper(), config['training']['num_new_tokens'],
+                        training_corpus=raw_tokens_or_corpus
+                    )
+                else:
+                    # For non-BPE, process tokens first
+                    logger.info(f"Processing {len(raw_tokens_or_corpus)} raw tokens for model '{model_name}'...")
+                    processed_tokens = processor.process_tokens_for_model(raw_tokens_or_corpus, algorithm)
+                    
+                    # Step 2b: Expand model tokenizer for metrics calculation
+                    expanded_tokenizer, tokens_added, _ = processor.expand_tokenizer(
+                        raw_tokens_or_corpus, algorithm.upper(), config['training']['num_new_tokens']
+                    )
                 
                 # Step 2c: Initialize evaluation components
                 compression_evaluator = CompressionEvaluator(config)

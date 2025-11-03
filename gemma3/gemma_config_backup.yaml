@@ -21,6 +21,8 @@ environment:
   hf_home: "/home/orr.zwebner/.cache/huggingface"  # Standard HF cache location
 
 
+
+
 # ===== AUTHENTICATION CONFIGURATION =====
 authentication:
   # Use HF API for authentication (improved method)

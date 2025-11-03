@@ -13,17 +13,18 @@
 project:
   # name: "gemma3-sanskrit-iast-pretraining_no_eeve"
   # name: "gemma3-tib-wilie-pretraining_no_eeve"
-  name: "gemma3-hebrew-1k-pretraining_no_eeve"
+  name: "gemma3-4b-hebrew-1k-pretraining_2_stages"
   root_dir: "/home/orrz/gpufs/projects/gemma3"
   # data_dir: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
   # data_dir: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
   logs_dir: "/home/orrz/gpufs/projects/gemma3/logs"
-  output_dir: "/home/orrz/gpufs/projects/gemma3/outputs/no_stages"  # Default output directory for single-stage training
+  # output_dir: "/home/orrz/gpufs/projects/gemma3/outputs/no_stages"  # Default output directory for single-stage training
+  output_dir: "/home/orrz/gpufs/projects/gemma3/outputs/hebrew/16384_samples"  # Default output directory for single-stage training
 # ===== ENVIRONMENT SETTINGS =====
 environment:
   # cuda_visible_devices: 0  # Use GPU 3 (as specified in your config)
-  cuda_visible_devices: "0,1,2"  # Use GPU 1 (as specified in your config)
-  # cuda_visible_devices: "2"  # Use GPU 1 (as specified in your config)
+  # cuda_visible_devices: "1,2,3"  # Use GPU 1 (as specified in your config)
+  cuda_visible_devices: "0,1"  # Use GPU 1 (as specified in your config)
   # cuda_visible_devices: "1,2,3"  # Use GPU 1 (as specified in your config)
   torch_compile_disable: true
   pytorch_disable_dynamo: true
@@ -39,20 +40,21 @@ authentication:
 
 # ===== MODEL CONFIGURATION =====
 model:
-  name: "google/gemma-3-1b-it"
+  # name: "google/gemma-3-1b-it"
+  name: "google/gemma-3-4b-it"
   torch_dtype: "bfloat16"  # Options: float16, bfloat16, float32
   # torch_dtype: "float16"
   # torch_dtype: "float32"  # Use bfloat16 for better performance on Ampere GPUs
   attn_implementation: "eager"  # More memory efficient
   # attn_implementation: "flash_attention_2"  # Use Flash Attention 2 for better performance
-  use_cache: false  # Critical: incompatible with gradient checkpointing
+  use_cache: false  # Critical: incompatible with gradient checkpointing - MUST be false when gradient_checkpointing=true
   trust_remote_code: true # Allow loading custom model code
   low_cpu_mem_usage: true # Memory optimization for large models
   ignore_mismatched_sizes: true # Ignore size mismatches during loading 
 
 # ===== TOKENIZER CONFIGURATION =====
 tokenizer:
-  # max_length: 256
+  add_pad_token: false  
   max_length: 512
   truncation: true
   padding: "max_length"
@@ -60,45 +62,40 @@ tokenizer:
 
 # ===== DATA CONFIGURATION =====
 data:
-  # Choose source type
-  source_type: "huggingface"  
-  # source_type: "local_files"
+  # Choose source type:
+  # - "local_files": Load from local JSONL/TXT files (faster, reproducible, no internet needed)
+  # - "huggingface": Stream from HuggingFace Hub (lower memory, always updated)
+  # source_type: "huggingface"
+  source_type: "local_files"
 
-  # Data file paths (absolute paths)
+  # Data file paths (absolute paths) - USED ONLY when source_type: "local_files"
+  # Supports: .jsonl (JSON Lines), .json, .txt (one sample per line)
+  # JSONL format: {"text": "your text content"}
   file_paths:
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.txt"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.json"
-    # - "/home/orrz/gpufs/projects/gemma3/train.txt"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/sanskrit_iast_ready_512.txt"
-    # "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
-    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_2.jsonl"
-    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_3.jsonl"
-    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_4.jsonl"
-    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_5.jsonl"
-    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_6.jsonl"
-    - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_7.jsonl"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_1.jsonl"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_2.jsonl"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_3.jsonl"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_4.jsonl"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_5.jsonl"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_6.jsonl"
+    # === HEBREW CC100 (1M samples, 177 MB) ===
+    - "/home/orrz/gpufs/projects/gemma3/data/he_cc100_1M.jsonl"
 
 
-  # For HuggingFace datasets - make sure to adjust the vocabulary_generation as well
-  hf_dataset_name: "cc100"  # Example
-  hf_dataset_config: "he"  # or specify subset name
+
+
+  # For HuggingFace datasets - USED ONLY when source_type: "huggingface"
+  # Make sure to adjust the vocabulary_generation section as well for consistency
+  hf_dataset_name: "cc100"  # Dataset name (uses cached version from HF_HOME)
+  hf_dataset_config: "he"  # Language/subset code (e.g., "he", "ar", "sa")
   hf_text_column: "text"  # Column containing the text
   hf_split: "auto"  # Which split to load ("train", "validation", or "auto" for all)
-  hf_streaming: true  # Enable for very large datasets
-  
+  hf_streaming: true  # Enable for very large datasets (lower memory usage)
+
   hf_trust_remote_code: true  # Set true if dataset requires custom code
-  # Train/eval split
-  hf_eval_size: 5000  # Take exactly 5000 samples for eval. For streaming datasets only when there is no validation split.
-  eval_split_ratio: 0.1
-  random_seed: 42
-  
-  # Fallback data (if no files found)
+
+  # Train/eval split configuration (applies to BOTH local and HuggingFace)
+  # For local files: uses sklearn train_test_split with random_seed for reproducibility
+  # For streaming: uses take/skip for exact eval_size, or filtering for ratio-based split
+  hf_eval_size: 5000  # Exact number of eval samples (streaming datasets without validation split)
+  eval_split_ratio: 0.1  # Ratio for eval split (e.g., 0.1 = 10% eval, 90% train)
+  random_seed: 42  # Random seed for reproducible splits (local files only)
+
+  # Fallback data (if no files found and fallback is enabled)
   use_fallback: true
   fallback_multiplier: 10  # Repeat fallback data N times
 
@@ -115,38 +112,47 @@ vocabulary_generation:
   algorithm_target: "sentencepiece_bpe"
   # algorithm_target: "sentencepiece_unigram"
   
-  # Data path for the Tokenizers project (should match your Sanskrit data)
-  # This tells the Tokenizers project where to find the Sanskrit training data
+  # Data path for the Tokenizers project (LEGACY - for backward compatibility)
+  # This tells the Tokenizers project where to find the training data
+  # NOTE: Use vocabulary_generation.data.path instead for more control
   # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
   # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/sanskrit_iast_ready_512.txt"
   # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
-  data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
-  
+  # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
+
   # Number of tokens to generate
-  # num_tokens: 16
+  num_tokens: 0
   # num_tokens: 2048
-  num_tokens: 4096  # Number of tokens to generate for the vocabulary
-  
+  # num_tokens: 4096  # Number of tokens to generate for the vocabulary
+
   data:
     # Data source type: "local_files" or "huggingface"
-    # source_type: "local_files"
-    source_type: "huggingface"
-    
+    # IMPORTANT: Should match the data.source_type above for consistency
+    source_type: "local_files"
+    # source_type: "huggingface"
+
     # FOR LOCAL FILES:
     # Absolute path to the data file or directory
-    path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
-    
+    # Options:
+    #   - Single JSONL file: "/path/to/file.jsonl"
+    #   - Directory with multiple files: "/path/to/directory"
+    #   - TXT file: "/path/to/file.txt"
+    # path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
+    path: "/home/orrz/gpufs/projects/gemma3/data/he_cc100_1M.jsonl"  # Hebrew CC100 local file
+
     # FOR HUGGINGFACE DATASETS:
     # HuggingFace dataset configuration (used when source_type is "huggingface")
     hf_dataset_name: "cc100"
-    hf_dataset_config: "he"  # Language/subset code
+    hf_dataset_config: "he"  # Language/subset code (e.g., "he", "ar", "sa")
     hf_text_column: "text"
     hf_split: "train"
     hf_streaming: true
     hf_trust_remote_code: false
-    
+
     # Debug/sampling settings (applies to both local and HF)
-    debug: 5000  # 0 = use all data, >0 = sample N texts for quick testing
+    # 0 = use all data, >0 = sample N texts for quick testing
+    # For tokenizer training, 5000-10000 samples is usually sufficient
+    # debug: 5000
 
   
 
@@ -199,11 +205,35 @@ training:
   
   
   # Optimization settings
-  # learning_rate: 0.00005  # 5e-5
-  learning_rate: 0.0001  # 1e-4 (for lora)
-  warmup_steps: 50
-  optimizer: "adafactor"  # Options: adamw_torch, adafactor
-  
+  # CRITICAL: Learning rate for continual pre-training should be MUCH lower than training from scratch
+  # learning_rate: 0.00005  # 5e-5 - TOO HIGH for continual pre-training! Will cause catastrophic forgetting
+  # learning_rate: 0.0001  # 1e-4 - Only for LoRA with frozen base model
+  learning_rate: 0.000002  # 2e-6 - RECOMMENDED for continual pre-training (QUICK WIN #1)
+  # For Stage 1 (embedding-only): Use 1e-6
+  # For Stage 2+ (full model): Use 2e-6 to 5e-6
+
+  # CRITICAL: Warmup steps must be sufficient for stable training (QUICK WIN #2)
+  # warmup_steps: 1  # TOO LOW - will cause gradient explosion
+  warmup_steps: 15  # Still too low for vocabulary expansion
+  # warmup_steps: 150  # RECOMMENDED - prevents gradient explosion and embedding divergence
+  # Rule of thumb: warmup_steps should be 5-10% of total training steps
+
+  # Learning rate scheduler (QUICK WIN #5)
+  lr_scheduler_type: "cosine"  # Options: linear, cosine, cosine_with_restarts, polynomial, constant
+  # Cosine decay provides smoother convergence and better final performance
+
+  # Gradient clipping (QUICK WIN #3)
+  max_grad_norm: 1.0  # Clip gradients to prevent explosion (CRITICAL for vocab expansion)
+
+  # Optimizer selection
+  # optimizer: "adafactor"  # Options: adamw_torch, adafactor
+  optimizer: "adamw_torch"  # optimizer: "adamw_torch" is often better for fine-tuning (adam with weight decay)
+  # Note: AdamW often performs better than Adafactor for fine-tuning
+  # Consider testing: optimizer: "adamw_torch" with weight_decay: 0.01
+
+  # Weight decay (regularization) - uncomment if using AdamW
+  weight_decay: 0.01  # L2 regularization to prevent overfitting
+
   # Safety boundary for streaming datasets
   max_steps: -1  # -1 = use epochs, positive number = use max_steps
 
@@ -247,24 +277,28 @@ eeve:
       train_layers: "added_tokens_embeddings"
       epochs: 2
       description: "Train added token embeddings only"
+      lora_enable: false 
 
     2:
       # Stage 2: Train all embeddings 
       train_layers: "embedding"
       epochs: 1
       description: "Train entire tied embedding matrix"
+      lora_enable: false 
 
     3:
       # Stage 3: Train full model 
       train_layers: "all"
       epochs: 1
       description: "Train all model parameters"
+      lora_enable: false 
 
     4:
       # Stage 4: Train hidden layers
       train_layers: "hidden_layers"
       epochs: 1
       description: "Train transformer layers only"
+      lora_enable: false 
 
   # Model saving between stages
   save_intermediate_stages: true
@@ -279,46 +313,66 @@ eeve:
 # ===== 2-STAGE TRAINING CONFIGURATION =====
 two_stage_training:
   enable: true  # Set to true to enable 2-stage training
-  
+
   stage1:
     # Stage 1: Train only new token embeddings
+    stage: 1
     train_layers: "added_tokens_embeddings"
-    epochs: 1
-    learning_rate: 5e-5
+    epochs: 2
+    learning_rate: 0.000001  # 1e-6 - Lower rate for embedding-only training
     description: "Stage 1: Train new token embeddings only"
-  
+    lora_enable: false
+
   stage2:
     # Stage 2: LoRA fine-tuning (uses lora config from above)
+    stage: 2
+    train_layers: "all"
     epochs: 2
-    learning_rate: 1e-5
-    description: "Stage 2: LoRA fine-tuning"
+    learning_rate: 0.000002  # 2e-6 - Safe rate for full model fine-tuning
+    description: "Stage 2: LoRA fine-tuning of full model"
+    lora_enable: true
 
 
 # ===== SAVING & EVALUATION =====
 checkpointing:
-  save_strategy: "epoch"  # Options: no, steps, epoch
-  save_steps: null
-  save_total_limit: 0  # 0 = disable saving to save memory
-  eval_strategy: "epoch"  # Options: no, steps, epoch
-  eval_steps: null
-  load_best_model_at_end: false  # Saves memory
-  metric_for_best_model: "loss"
-  greater_is_better: false
+  # OPTIMIZED FOR GPUFS: Minimal checkpointing to avoid Azure Files I/O issues
+  save_strategy: "no"  # Options: no, steps, epoch - "no" disables checkpoints (safest for cloud)
+  save_steps: null  # Not used when save_strategy is "no"
+  save_total_limit: 0  # 0 = disable saving to prevent GPUFS write issues
+
+  eval_strategy: "epoch"  # Evaluate only at epoch boundaries (safe for GPUFS)
+  eval_steps: null  # Not used with epoch strategy
+
+  load_best_model_at_end: false  # Disabled to reduce GPUFS I/O
+  metric_for_best_model: "eval_loss"  # Metric to use for selecting best model
+  greater_is_better: false  # Lower loss is better
+
+  # ALTERNATIVE: If you need checkpoints, use epoch-based:
+  # save_strategy: "epoch"
+  # eval_strategy: "epoch"
+  # save_total_limit: 1  # Keep only last checkpoint
 
 # ===== LOGGING CONFIGURATION =====
 logging:
-  # Local logging
+  # OPTIMIZED FOR GPUFS: Balanced logging - 2x better than old config, but safe
   logging_dir: "logs"
-  logging_steps: 100
+  logging_steps: 50  # Log every 50 steps - safe balance (was 100 in old config, 10 in risky config)
   logging_strategy: "steps"
-  logging_first_step: true
-  logging_nan_inf_filter: true
-  sample_log_steps: 1  # Log sample outputs every N steps
-  
-  # Wandb configuration
+  logging_first_step: true  # Always log first step to catch initialization issues
+  logging_nan_inf_filter: true  # Filter NaN/Inf values from logs
+
+  # CRITICAL: sample_log_steps controls text generation logging
+  # sample_log_steps: 1  # DANGEROUS! Writes to GPUFS every step - caused the stuck process bug
+  sample_log_steps: 2000  # SAFE: Log samples every 2000 steps (or remove this line entirely)
+
+  # ALTERNATIVE OPTIONS:
+  # sample_log_steps: 1000  # More frequent sample logging (still safe)
+  # Remove sample_log_steps entirely to disable sample logging (safest)
+
+  # Wandb configuration (SAFE - buffers locally, syncs asynchronously to cloud)
   use_wandb: true
-  wandb_project: "gemma3-sanskrit-pretraining"
-  wandb_run_name: "gemma3-1b-sanskrit-local"
+  wandb_project: "gemma3-hebrew-pretraining"
+  wandb_run_name: "gemma3-1b-hebrew-10k-samples"
   report_to: "wandb"
 
 # ===== HARDWARE OPTIMIZATIONS =====
@@ -343,7 +397,7 @@ deepspeed:
 
 lora:
   # enable: false  # Set to true to use LoRA
-  enable: true  # Set to true to use LoRA
+  single_stage_enable: true  # Set to true to use LoRA
   r: 64 # Rank - smaller = more efficient, larger = more expressive
   lora_alpha: 128 # Scaling factor (usually 2*r)
   lora_dropout: 0.1 # Dropout for LoRA layers (to prevent overfitting)
@@ -375,12 +429,21 @@ debug:
   # limit_train_samples: 0  # 0 = no limit, >0 = limit to N samples
   # limit_eval_samples: 0   # 0 = no limit, >0 = limit to N samples
 
-  limit_train_samples: 128 
-  limit_eval_samples: 32   # Limit eval samples for quick testing
+  # limit_train_samples: 128 
+  # limit_eval_samples: 32   # Limit eval samples for quick testing
 
   # limit_train_samples: 1024 
   # limit_eval_samples: 128   # Limit eval samples for quick testing
+
+  # limit_train_samples: 100000
+  # limit_eval_samples: 10000   # Limit eval samples for quick testing
   
+  limit_train_samples: 10000
+  limit_eval_samples: 1000 
+
+    
+  # limit_train_samples: 1000
+  # limit_eval_samples: 100 
   # Training overrides for testing
   # test_epochs: 1          # Override epochs when test_mode is true
   # test_batch_size: 4      # Override batch size when test_mode is true

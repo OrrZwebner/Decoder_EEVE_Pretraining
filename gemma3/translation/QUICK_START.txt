@@ -1,0 +1,63 @@
+================================================================================
+TRANSLATION FINE-TUNING - QUICK START GUIDE
+================================================================================
+
+WHAT YOU HAVE:
+  - Simple translation fine-tuning for Gemma-3
+  - Uses LoRA (only trains ~1% of parameters)
+  - 2 Python scripts (~700 lines total)
+  - Full documentation in README.md
+
+QUICK START (5 minutes):
+
+1. Edit config:
+   cd /home/orrz/gpufs/projects/gemma3/translation
+   nano configs/train_config.yaml
+   
+   Change these lines:
+     translation.source_lang: "English"
+     translation.target_lang: "Hebrew"
+     translation.train_samples: 1000
+
+2. Run training:
+   python train.py --config configs/train_config.yaml
+   
+   (Takes 5-10 minutes for 1000 samples)
+
+3. Find output:
+   outputs/translation/gemma3-1b_en-he_YYYYMMDD_HHMM/final_model/
+
+4. Evaluate:
+   cd /home/orrz/gpufs/projects/EVALUATION
+   # Edit config.yaml to point to your model
+   python -m src.main --config config.yaml
+
+SAMPLE SIZES:
+  1,000 samples   = 5-10 min training (basic quality, BLEU ~10-20)
+  5,000 samples   = 20-30 min training (decent quality, BLEU ~20-30)
+  10,000 samples  = 40-60 min training (good quality, BLEU ~25-35)
+
+ADVANCED USAGE:
+  # Use local pretrained model as base
+  python train.py --config configs/train_config.yaml \
+      --model /path/to/outputs/hebrew/stage2/merged_model
+
+  # Train with more samples
+  python train.py --config configs/train_config.yaml --samples 10000
+
+READ MORE:
+  - README.md: Complete documentation with examples
+  - configs/train_config.yaml: All available parameters (well-commented)
+
+================================================================================
+
+TESTING WITH NOTEBOOK:
+  jupyter notebook translation_exploration.ipynb
+  
+  The notebook includes:
+  - Sample 5 English-Hebrew pairs from NLLB-200
+  - Generate translations with your model
+  - Visualize text lengths and distributions
+  - Compare reference vs generated translations
+  - Interactive testing with custom sentences
+

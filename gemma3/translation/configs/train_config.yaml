@@ -1,0 +1,209 @@
+# ============================================================================
+# Translation Fine-tuning Configuration for Gemma-3
+# ============================================================================
+#
+# Purpose: Fine-tune Gemma-3 models for neural machine translation using LoRA
+# Dataset: NLLB-200 (high-quality parallel corpus)
+# Method: LoRA (Low-Rank Adaptation) for parameter-efficient fine-tuning
+#
+# Quick Start:
+#   1. Edit model.base_model (choose 1b or 4b)
+#   2. Edit translation.source_lang and translation.target_lang
+#   3. Edit translation.train_samples (1000 for quick test, 5000-10000 for better quality)
+#   4. Run: python train_translation.py --config configs/train_config.yaml
+# ============================================================================
+
+# ===== MODEL CONFIGURATION =====
+model:
+  # Base model - supports both HuggingFace models and local fine-tuned models
+  #
+  # OPTION 1: HuggingFace base models
+  base_model: "google/gemma-3-1b-it"
+  # base_model: "google/gemma-3-4b-it"
+  #
+  # OPTION 2: Local fine-tuned models (continue training from checkpoint)
+  # base_model: "/home/orrz/gpufs/projects/gemma3/outputs/hebrew/16384_samples/two_stages/stage2/merged_model"
+  #
+  # OPTION 3: Local LoRA adapters (will be merged with base model automatically)
+  # base_model: "/home/orrz/gpufs/projects/gemma3/outputs/translation/gemma3-1b_en-he_20241029/final_model"
+
+  # Data type for model weights
+  torch_dtype: "bfloat16"  # bfloat16 recommended for RTX 3090
+
+  # Other model settings
+  attn_implementation: "eager"
+  trust_remote_code: true
+  low_cpu_mem_usage: true
+
+# ===== TRANSLATION TASK CONFIGURATION =====
+translation:
+  # ===== LANGUAGE PAIR =====
+  # Simply specify the language names - codes are automatically resolved!
+  # See utils.py for full list of supported languages (80+ languages)
+  # Examples: English, Hebrew, Arabic, French, Spanish, German, Chinese, Japanese, etc.
+  source_lang: "English"
+  target_lang: "Hebrew"
+
+  # Note: source_code and target_code are auto-resolved from language names
+  # You can still specify them manually if needed:
+  # source_code: "eng_Latn"
+  # target_code: "heb_Hebr"
+
+  # ===== DATASET =====
+  # NLLB-200 dataset from AllenAI
+  dataset: "allenai/nllb"
+
+  # Local dataset path (OPTIONAL - recommended for faster loading and avoiding download issues)
+  # If specified and file exists, will load from local JSONL file instead of streaming from HuggingFace
+  # To download local dataset first, run: python download_nllb_data.py
+  local_dataset_path: "/home/orrz/gpufs/projects/gemma3/data/nllb_translation/all_pairs.jsonl"
+  # Or use specific language pair file:
+  # local_dataset_path: "/home/orrz/gpufs/projects/gemma3/data/nllb_translation/eng_heb.jsonl"
+  # Leave commented out to fall back to HuggingFace streaming (slower, may have connection issues)
+
+  # Sample sizes
+  # Recommendations:
+  #   1,000 samples: Quick test, basic patterns (5-10 min training)
+  #   5,000 samples: Decent quality (20-30 min training)
+  #   10,000 samples: Good quality (40-60 min training)
+  #   50,000 samples: High quality (3-4 hours training)
+  # train_samples: 1000
+  # eval_samples: 200
+  train_samples: 2
+  eval_samples: 2
+
+  # ===== PROMPT TEMPLATE =====
+  # Instruction format for translation (matches EVALUATION pipeline)
+  prompt_template: "Translate from {source_lang} to {target_lang}: {text}"
+
+  # ===== TEXT FILTERING =====
+  # Filter out sentences that are too long or too short
+  max_source_length: 200  # Remove sentences longer than 200 tokens
+  min_source_length: 5    # Remove sentences shorter than 5 tokens
+
+  # Maximum sequence length for tokenization
+  max_length: 512  # Same as model's max length
+
+# ===== TRAINING CONFIGURATION =====
+training:
+  # Output directory for checkpoints and final model
+  output_dir: "outputs/translation"
+
+  # ===== EPOCHS & BATCHING =====
+  num_epochs: 1  # 1 epoch is usually sufficient for LoRA with small datasets
+
+  # Batch size per GPU
+  batch_size: 8
+
+  # Gradient accumulation (effective batch = batch_size × gradient_accumulation)
+  gradient_accumulation: 8  # Effective batch size = 16
+
+  # ===== LEARNING RATE =====
+  # LoRA can handle higher learning rates than full fine-tuning
+  learning_rate: 3e-4  # 0.0003
+
+  # Warmup steps (gradual learning rate increase at start)
+  warmup_steps: 10
+
+  # Learning rate scheduler
+  scheduler: "cosine"  # Options: linear, cosine, constant
+
+  # Gradient clipping (prevent exploding gradients)
+  max_grad_norm: 1.0
+
+  # ===== PRECISION & MEMORY =====
+  # Mixed precision training
+  bf16: true  # Use bfloat16 for faster training
+  fp16: false  # Don't use fp16 (bfloat16 is better for RTX 3090)
+
+  # Gradient checkpointing (saves memory at cost of speed)
+  gradient_checkpointing: true
+
+  # ===== EVALUATION & SAVING =====
+  # Evaluate and save checkpoints during training
+  # eval_steps: 250       # Evaluate every 250 steps
+  # save_steps: 250       # Save checkpoint every 250 steps
+  # save_total_limit: 2   # Keep only 2 best checkpoints
+  eval_steps: null        # Evaluate every 250 steps
+  save_steps: null      # Save checkpoint every 250 steps
+  save_total_limit: 2   # Keep only 2 best checkpoints
+
+  # Evaluation strategy
+  eval_strategy: "epoch"
+  save_strategy: "no"
+
+  # Load best model at end of training
+  load_best_model_at_end: false
+  metric_for_best_model: "eval_loss"
+
+# ===== LORA CONFIGURATION =====
+lora:
+  # LoRA rank (higher = more parameters, better quality, slower training)
+  # Recommendations:
+  #   r=8: Very lightweight (fastest, lowest quality)
+  #   r=16: Balanced (recommended for most cases)
+  #   r=32: High quality (slower, more memory)
+  r: 16
+
+  # LoRA alpha (scaling factor, usually 2×r)
+  alpha: 32
+
+  # Dropout for LoRA layers
+  dropout: 0.05
+
+  # Target modules (which layers to apply LoRA)
+  # For translation, focusing on attention is usually sufficient
+  target_modules:
+    - q_proj    # Query projection
+    - k_proj    # Key projection
+    - v_proj    # Value projection
+    - o_proj    # Output projection
+
+  # Optionally add MLP layers for more capacity:
+  # - gate_proj
+  # - up_proj
+  # - down_proj
+
+  # Bias training
+  bias: "none"  # Options: none, all, lora_only
+
+  # Task type
+  task_type: "CAUSAL_LM"
+
+# ===== LOGGING CONFIGURATION =====
+logging:
+  # Logging frequency
+  logging_steps: 50
+
+  # Weights & Biases integration (optional)
+  use_wandb: false  # Set to true to enable W&B logging
+  wandb_project: "gemma3-translation"
+  wandb_run_name: null  # Auto-generated if null
+
+# ===== ENVIRONMENT CONFIGURATION =====
+environment:
+  # CUDA device selection
+  cuda_devices: "2"  # Single GPU (e.g., "0", "1", "2")
+  # cuda_devices: "0,1"  # Multiple GPUs
+
+  # Random seed for reproducibility
+  seed: 42
+
+  # HuggingFace cache directory
+  hf_home: "/home/orrz/gpufs/hf/.cache/huggingface"
+
+  # HuggingFace token path (for downloading models)
+  hf_token_path: "/home/orrz/gpufs/hf/.cache/huggingface/token"
+
+# ===== ADVANCED OPTIONS =====
+advanced:
+  # Data collator settings
+  label_pad_token_id: -100  # Padding token for labels (ignored in loss)
+
+  # Optimizer
+  optimizer: "adamw_torch"  # Options: adamw_torch, adamw_hf, sgd
+  weight_decay: 0.01
+
+  # Early stopping (optional)
+  early_stopping_patience: null  # Stop if eval_loss doesn't improve for N evaluations
+  early_stopping_threshold: 0.0  # Minimum improvement to count as better

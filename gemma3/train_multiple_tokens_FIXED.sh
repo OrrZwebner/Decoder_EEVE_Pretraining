@@ -3,15 +3,15 @@
 # New log structure: logs/pre_train_Xb/N_samples/n_tokens/N_n_timestamp.log
 
 # Configuration
-# TOKEN_COUNTS=(32 64 128 256 512 1024 2048 4096 8192 16384)  # List of token counts to train
-TOKEN_COUNTS=(4096 8192 16384)  # List of token counts to train
+# TOKEN_COUNTS=(4096 8192 16384)  # List of token counts to train
+# TOKEN_COUNTS=(256 512 1024)  # List of token counts to train
 # TOKEN_COUNTS=(32768)  # List of token counts to train
-# TOKEN_COUNTS=(32 64 128 256 512 1024 2048 4096 8192 16384 32768)  # List of token counts to train
+TOKEN_COUNTS=(32 64 128 256 512 1024 2048 4096 8192 16384)  # List of token counts to train
 # TOKEN_COUNTS=(4096 8192 16384 32768)  # List of token counts to train
 
-CONFIG_TEMPLATE="gemma_config_template_2.yaml"
+# CONFIG_TEMPLATE="gemma_config_template_2.yaml"
 # CONFIG_TEMPLATE="gemma_config_template_1.yaml"
-# CONFIG_TEMPLATE="gemma_config_template.yaml"
+CONFIG_TEMPLATE="gemma_config_template.yaml"
 CONFIG_DIR="configs/token_configs"
 
 # Colors for output
@@ -23,7 +23,9 @@ NC='\033[0m' # No Color
 # Function to extract model size from config template
 # Returns: 1, 4, or 12 (the number before 'b' in gemma-3-Xb)
 get_model_size() {
-    local model_line=$(grep -A 1 "^model:" "$CONFIG_TEMPLATE" | grep "name:")
+    # Use grep to find the model section, then filter out commented lines (lines starting with #)
+    # This ensures we only match the active configuration line, not commented alternatives
+    local model_line=$(grep -A 10 "^model:" "$CONFIG_TEMPLATE" | grep -v "^[[:space:]]*#" | grep "name:" | head -1)
     local model_size=$(echo "$model_line" | sed -n 's/.*gemma-3-\([0-9]\+\)b.*/\1/p')
     echo "$model_size"
 }

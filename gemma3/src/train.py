@@ -63,6 +63,10 @@ os.environ["HF_HOME"] = config['environment']['hf_home']
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ['CUDA_LAUNCH_BLOCKING'] = "1"
 
+# Memory optimization: Enable expandable segments to reduce fragmentation
+# This helps prevent OOM errors caused by memory fragmentation during long training runs
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 import logging
 logging.basicConfig(
     level=logging.INFO,
@@ -103,10 +107,10 @@ from model_utils import load_model_pipeline, freeze_layers, get_stage_checkpoint
 
 # Import training components
 from transformers import (
-    TrainingArguments, 
+    TrainingArguments,
     Trainer
 )
-from training_callbacks import SampleLoggingCallback, DataInspectionCallback, EpochBasedStoppingCallback
+from training_callbacks import SampleLoggingCallback, DataInspectionCallback, EpochBasedStoppingCallback, MemoryCleanupCallback
 from datasets import IterableDataset
 
 from pathlib import Path
@@ -186,7 +190,7 @@ def get_eeve_stage_config(config, stage: int) -> dict:
         return {
             'train_layers': stage_cfg.get('train_layers', 'added_tokens_embeddings' if stage == 1 else 'all'),
             'epochs': stage_cfg.get('epochs', 1),
-            'learning_rate': stage_cfg.get('learning_rate'),
+            'learning_rate': float(stage_cfg.get('learning_rate')),
             'description': stage_cfg.get('description', f'Stage {stage}'),
             'n_added_tokens': n_added_tokens
         }
@@ -241,6 +245,63 @@ def get_n_added_tokens(config) -> int:
     return 0
 
 
+def get_lora_config_from_stage(config, stage_config: dict = None) -> tuple:
+    """
+    Determine if LoRA should be enabled and get LoRA configuration.
+    
+    Args:
+        config: Main configuration dictionary
+        stage_config: Optional stage-specific configuration
+        
+    Returns:
+        Tuple of (lora_enabled: bool, peft_config: LoraConfig or None)
+    """
+    lora_cfg = config.get('lora', {})
+    
+    # Determine if this is stage training or single-stage training
+    is_stage_training = stage_config is not None
+    
+    # Initialize lora_enabled (FIXED: explicit initialization)
+    lora_enabled = False
+    
+    if is_stage_training:
+        # For stage training, check stage-level lora_enable
+        lora_enabled = stage_config.get('lora_enable', False)
+    else:
+        # For single-stage training, check single_stage_enable
+        lora_enabled = lora_cfg.get('single_stage_enable', False)
+    
+    # FIXED: Check and return immediately if disabled
+    if not lora_enabled:
+        if is_stage_training:
+            logging.info(f"🚫 LoRA disabled for this stage")
+        else:
+            logging.info(f"🚫 LoRA disabled for single-stage training")
+        return False, None
+    
+    # Only reach here if LoRA is enabled
+    if is_stage_training:
+        logging.info(f"✅ LoRA enabled for this stage")
+    else:
+        logging.info(f"✅ LoRA enabled for single-stage training")
+    
+    # Build LoRA config from global lora settings
+    peft_config = LoraConfig(
+        r=lora_cfg.get('r', 64),
+        lora_alpha=lora_cfg.get('lora_alpha', 128),
+        lora_dropout=lora_cfg.get('lora_dropout', 0.1),
+        bias=lora_cfg.get('bias', 'none'),
+        target_modules=lora_cfg.get('target_modules', 
+            ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"]),
+        task_type=lora_cfg.get('task_type', "CAUSAL_LM")
+    )
+    
+    logging.info(f"📊 LoRA configuration:")
+    logging.info(f"   r={peft_config.r}, alpha={peft_config.lora_alpha}, dropout={peft_config.lora_dropout}")
+    logging.info(f"   target_modules={peft_config.target_modules}")
+    
+    return True, peft_config
+
 def create_training_arguments(config, stage_config: dict = None) -> TrainingArguments:
     """
     Create TrainingArguments from configuration with optional stage overrides
@@ -261,12 +322,15 @@ def create_training_arguments(config, stage_config: dict = None) -> TrainingArgu
     num_epochs = training_config.get('num_train_epochs', 1)
     learning_rate = training_config.get('learning_rate', 5e-5)
     
+    #log learning_rate
+    logging.info(f"Base learning rate from config: {learning_rate}")
+
     # Apply stage overrides if provided
     if stage_config:
         num_epochs = stage_config.get('epochs', num_epochs)
         if stage_config.get('learning_rate'):
-            learning_rate = stage_config['learning_rate']
-
+            learning_rate = float(stage_config['learning_rate'])
+            logging.info(f"Overriding learning rate for stage: {learning_rate}")
     # Ensure we have valid epochs value
     if num_epochs is None or num_epochs <= 0:
         logging.warning(f"Invalid epochs value: {num_epochs}, defaulting to 1")
@@ -302,22 +366,29 @@ def create_training_arguments(config, stage_config: dict = None) -> TrainingArgu
 
     
 
+    # Get random seed from config for reproducibility
+    random_seed = config.get('data', {}).get('random_seed', 42)
+
     # Create training arguments
     training_args = TrainingArguments(
         # Output and logging
         output_dir=project_config['output_dir'],
         logging_dir=logging_config.get('logging_dir', project_config['logs_dir']),
         run_name=logging_config.get('wandb_run_name', 'gemma3-sanskrit-training'),
-        
+
+        # Reproducibility: Set seeds for all random operations
+        seed=random_seed,           # Global seed for model initialization, dropout, etc.
+        data_seed=random_seed,      # Seed for data sampling/shuffling operations
+
         # Training parameters
         num_train_epochs=num_epochs,
         max_steps=max_steps,
         per_device_train_batch_size=training_config.get('per_device_train_batch_size', 16),
         per_device_eval_batch_size=training_config.get('per_device_eval_batch_size', 16),
         gradient_accumulation_steps=training_config.get('gradient_accumulation_steps', 8),
-        
+
         # Optimization
-        learning_rate=learning_rate,
+        learning_rate=float(learning_rate),
         warmup_steps=training_config.get('warmup_steps', 50),
         optim=training_config.get('optimizer', 'adafactor'),
         
@@ -516,6 +587,13 @@ def train_single_stage(config, model, tokenizer, train_dataset, eval_dataset, da
         stage_config = {}
     stage_config['stage'] = stage
 
+    # Check if LoRA should be applied for this stage
+    lora_enabled, peft_config = get_lora_config_from_stage(config, stage_config)
+    
+    if lora_enabled:
+        logging.info(f"🔧 Applying LoRA to model...")
+        model = get_peft_model(model, peft_config)
+        model.print_trainable_parameters()
     # Create training arguments
     training_args = create_training_arguments(config, stage_config)
     
@@ -553,6 +631,11 @@ def train_single_stage(config, model, tokenizer, train_dataset, eval_dataset, da
         callbacks.append(SampleLoggingCallback(tokenizer, log_every_n_steps=log_interval))
         logging.info(f"Added SampleLoggingCallback (every {log_interval} steps)")
 
+    # Add memory cleanup callback (ALWAYS enabled for OOM prevention)
+    # This runs every 100 steps by default to prevent memory fragmentation
+    cleanup_interval = config.get('hardware', {}).get('memory_cleanup_steps', 100)
+    callbacks.append(MemoryCleanupCallback(cleanup_every_n_steps=cleanup_interval, log_memory=True))
+    logging.info(f"✅ Added MemoryCleanupCallback (every {cleanup_interval} steps)")
 
     # Initialize trainer
     logging.info("Initializing trainer...")
@@ -584,22 +667,6 @@ def train_single_stage(config, model, tokenizer, train_dataset, eval_dataset, da
     try:
         trainer.train()
         
-        # logging.info(f"✅ Stage {stage} training completed successfully!")
-        
-        # # Save the model for this stage
-        # if stage > 0:
-        #     # EEVE stage - save to stage-specific directory
-        #     save_path = get_stage_checkpoint_path(config, stage)
-        # else:
-        #     # Standard training - save to output directory
-        #     save_path = os.path.join(config['project']['output_dir'], "final_model")
-        
-        # # Create directory and save
-        # os.makedirs(save_path, exist_ok=True)
-        
-        # logging.info(f"💾 Saving model to {save_path}")
-        # model.save_pretrained(save_path)
-        # tokenizer.save_pretrained(save_path)
         logging.info(f"✅ Stage {stage} training completed successfully!")
         
         # Get base directory for this stage/training
@@ -612,11 +679,11 @@ def train_single_stage(config, model, tokenizer, train_dataset, eval_dataset, da
         os.makedirs(save_path, exist_ok=True)
         
         logging.info(f"💾 Saving final model to {save_path}")
-        # model.save_pretrained(save_path)
-        # tokenizer.save_pretrained(save_path)
         
         # Check if model is a PEFT model
-        lora_enabled = config.get('lora', {}).get('enable', False)
+        # first check if it stage training or single stage with LoRA
+        # is_stage_training = config.get('training', {}).get('stage', 0) > 0
+        # lora_enabled = config.get('lora', {}).get('enable', False)
         if lora_enabled:
             # For LoRA: save adapters (and embedding layers if resized)
             save_embedding_layers = config.get('lora', {}).get('save_embedding_layers', True)
@@ -781,9 +848,11 @@ def run_standard_training(config) -> None:
     model, tokenizer = load_model_pipeline(config)
     train_dataset, eval_dataset, data_collator = load_data_pipeline(tokenizer, config)
     
-    # Train
+    # Train with stage_config=None to trigger single_stage_enable check
     save_path = train_single_stage(
-        config, model, tokenizer, train_dataset, eval_dataset, data_collator
+        config, model, tokenizer, train_dataset, eval_dataset, data_collator,
+        stage=0,           # Stage 0 indicates single-stage training
+        stage_config=None  # None triggers single_stage_enable check
     )
     
     logging.info(f"✅ Standard training completed. Model saved to: {save_path}")
@@ -792,64 +861,99 @@ def run_standard_training(config) -> None:
 
 def run_2_stage_training(config) -> None:
     """
-    2-stage training: embeddings → LoRA
+    2-stage training: embeddings → full model fine-tuning
+
+    Stage 1 is SKIPPED if no custom vocabulary expansion is enabled,
+    since there are no new token embeddings to train.
     """
     logging.info("="*80)
     logging.info("🚀 STARTING 2-STAGE TRAINING")
     logging.info("="*80)
-    
+
     config['_training_timestamp'] = datetime.now().strftime("%d-%m-%Y_%H%M")
-    
+
     two_stage_config = config.get('two_stage_training', {})
     stage1_config = two_stage_config.get('stage1', {})
     stage2_config = two_stage_config.get('stage2', {})
-    
-    # STAGE 1: Train embeddings only
-    logging.info("\n📍 STAGE 1: Training New Token Embeddings")
-    stage1_config['stage'] = 1
-    
-    model, tokenizer = load_model_pipeline(config, stage=0)
+
+    # Check if vocabulary expansion is enabled
+    vocab_config = config.get('vocabulary', {})
+    use_custom_vocab = vocab_config.get('use_custom_vocabulary', False)
+
+    save_path_stage1 = None  # Will be set if Stage 1 runs
+
+    # ===== STAGE 1: Train New Token Embeddings (CONDITIONAL) =====
+    if use_custom_vocab:
+        logging.info("\n" + "="*80)
+        logging.info("📍 STAGE 1: Training New Token Embeddings")
+        logging.info("="*80)
+        logging.info("Custom vocabulary expansion is enabled")
+        logging.info("Stage 1 will train only the new token embeddings")
+
+        model, tokenizer = load_model_pipeline(config, stage=1)
+
+        # Verify that tokens were actually added
+        from model_utils import get_n_added_tokens
+        n_added_tokens = get_n_added_tokens(config, model, tokenizer)
+
+        if n_added_tokens > 0:
+            logging.info(f"✅ Confirmed: {n_added_tokens} tokens added - Stage 1 is necessary")
+
+            train_dataset, eval_dataset, data_collator = load_data_pipeline(tokenizer, config)
+
+            save_path_stage1 = train_single_stage(
+                config, model, tokenizer, train_dataset, eval_dataset, data_collator,
+                stage=1, stage_config=stage1_config
+            )
+
+            logging.info(f"✅ Stage 1 completed: {save_path_stage1}")
+
+            # Clean up before Stage 2
+            del model, train_dataset, eval_dataset
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        else:
+            logging.warning("⚠️ Custom vocabulary enabled but no tokens were added")
+            logging.warning("⚠️ Skipping Stage 1 (no new embeddings to train)")
+            logging.info("Proceeding directly to Stage 2...")
+            # Don't load model yet, will be loaded in Stage 2
+            del model, tokenizer
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+    else:
+        logging.info("\n" + "="*80)
+        logging.info("⏭️  SKIPPING STAGE 1: No Vocabulary Expansion")
+        logging.info("="*80)
+        logging.info("Custom vocabulary is disabled (use_custom_vocabulary: false)")
+        logging.info("Stage 1 trains new token embeddings, but no new tokens exist")
+        logging.info("Proceeding directly to Stage 2 (full model training)...")
+        logging.info("="*80)
+
+    # ===== STAGE 2: Full Model Fine-tuning =====
+    logging.info("\n" + "="*80)
+    logging.info("📍 STAGE 2: Full Model Fine-tuning")
+    logging.info("="*80)
+
+    # Load model - either from Stage 1 checkpoint or fresh
+    if save_path_stage1:
+        logging.info(f"Loading model from Stage 1 checkpoint: {save_path_stage1}")
+        model, tokenizer = load_model_pipeline(config, stage=2, load_from_dir=save_path_stage1)
+    else:
+        logging.info("Loading fresh model (Stage 1 was skipped)")
+        model, tokenizer = load_model_pipeline(config, stage=2)
+
+    # Load data and train
     train_dataset, eval_dataset, data_collator = load_data_pipeline(tokenizer, config)
-    
-    save_path_stage1 = train_single_stage(
-        config, model, tokenizer, train_dataset, eval_dataset, data_collator,
-        stage=1, stage_config=stage1_config
-    )
-    
-    logging.info(f"✅ Stage 1 completed: {save_path_stage1}")
-    
-    del model, train_dataset, eval_dataset
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-    
-    # STAGE 2: LoRA fine-tuning
-    logging.info("\n📍 STAGE 2: LoRA Fine-tuning")
-    stage2_config['stage'] = 2
-    
-    model, tokenizer = load_model_pipeline(config, stage=0, load_from_dir=save_path_stage1)
-    
-    # Apply LoRA
-    lora_cfg = config.get('lora', {})
-    peft_config = LoraConfig(
-        r=lora_cfg.get('r', 64),
-        lora_alpha=lora_cfg.get('lora_alpha', 128),
-        lora_dropout=lora_cfg.get('lora_dropout', 0.1),
-        bias=lora_cfg.get('bias', 'none'),
-        target_modules=lora_cfg.get('target_modules', ["q_proj", "k_proj", "v_proj", "o_proj"]),
-        task_type="CAUSAL_LM"
-    )
-    model = get_peft_model(model, peft_config)
-    logging.info(f"✅ LoRA applied: r={lora_cfg.get('r', 64)}")
-    
-    train_dataset, eval_dataset, data_collator = load_data_pipeline(tokenizer, config)
-    
+
     save_path_stage2 = train_single_stage(
         config, model, tokenizer, train_dataset, eval_dataset, data_collator,
         stage=2, stage_config=stage2_config
     )
-    
+
     logging.info(f"✅ Stage 2 completed: {save_path_stage2}")
+    logging.info("="*80)
     logging.info("🎉 2-STAGE TRAINING COMPLETE!")
+    logging.info("="*80)
 
 
 
@@ -1076,8 +1180,11 @@ def main():
         logging.info("Training interrupted by user")
         
     except Exception as e:
+        import traceback
         print(f"\n❌ Training failed: {e}")
         logging.error(f"Training failed: {e}")
+        logging.error("Full traceback:")
+        logging.error(traceback.format_exc())
         
         if torch.cuda.is_available():
             print("GPU memory status at error:")

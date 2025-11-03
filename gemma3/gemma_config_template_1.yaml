@@ -24,7 +24,7 @@ project:
 environment:
   # cuda_visible_devices: 0  # Use GPU 3 (as specified in your config)
   # cuda_visible_devices: "1,2,3"  # Use GPU 1 (as specified in your config)
-  cuda_visible_devices: "1"  # Use GPU 1 (as specified in your config)
+  cuda_visible_devices: "2"  # Use GPU 1 (as specified in your config)
   # cuda_visible_devices: "1,2,3"  # Use GPU 1 (as specified in your config)
   torch_compile_disable: true
   pytorch_disable_dynamo: true
@@ -61,10 +61,8 @@ tokenizer:
 
 # ===== DATA CONFIGURATION =====
 data:
-  # Choose source type:
-  # - "local_files": Load from local JSONL/TXT files (faster, reproducible, no internet needed)
-  # - "huggingface": Stream from HuggingFace Hub (lower memory, always updated)
-  # source_type: "huggingface"
+  # Choose source type
+  # source_type: "huggingface"  
   source_type: "local_files"
 
   # Data file paths (absolute paths) - USED ONLY when source_type: "local_files"
@@ -73,50 +71,43 @@ data:
   file_paths:
     # === HEBREW CC100 (1M samples, 177 MB) ===
     - "/home/orrz/gpufs/projects/gemma3/data/he_cc100_1M.jsonl"
-
-    # === SANSKRIT DATA (multiple files) ===
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.txt"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/train.json"
+    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/sanskrit_iast_ready_512.txt"
+    # # "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_2.jsonl"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_3.jsonl"
+    # # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_3.jsonl"
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_4.jsonl"
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_5.jsonl"
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_6.jsonl"
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_iast_7.jsonl"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_1.jsonl"
-    # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_2.jsonl"
+    # # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_1.jsonl"
+    # # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_2.jsonl"
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_3.jsonl"
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_4.jsonl"
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_5.jsonl"
     # - "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast/00_sanskrit_devanagari_6.jsonl"
 
 
-  # For HuggingFace datasets - USED ONLY when source_type: "huggingface"
-  # Make sure to adjust the vocabulary_generation section as well for consistency
-  hf_dataset_name: "cc100"  # Dataset name (uses cached version from HF_HOME)
-  hf_dataset_config: "he"  # Language/subset code (e.g., "he", "ar", "sa")
+  # For HuggingFace datasets - make sure to adjust the vocabulary_generation as well
+  hf_dataset_name: "cc100"  # Example
+  hf_dataset_config: "he"  # or specify subset name
   hf_text_column: "text"  # Column containing the text
   hf_split: "auto"  # Which split to load ("train", "validation", or "auto" for all)
-  hf_streaming: true  # Enable for very large datasets (lower memory usage)
-
+  hf_streaming: true  # Enable for very large datasets
+  
   hf_trust_remote_code: true  # Set true if dataset requires custom code
-
-  # Train/eval split configuration (applies to BOTH local and HuggingFace)
-  # For local files: uses sklearn train_test_split with random_seed for reproducibility
-  # For streaming: uses take/skip for exact eval_size, or filtering for ratio-based split
-  hf_eval_size: 5000  # Exact number of eval samples (streaming datasets without validation split)
-  eval_split_ratio: 0.1  # Ratio for eval split (e.g., 0.1 = 10% eval, 90% train)
-  random_seed: 42  # Random seed for reproducible splits (local files only)
-
-  # Fallback data (if no files found and fallback is enabled)
+  # Train/eval split
+  hf_eval_size: 5000  # Take exactly 5000 samples for eval. For streaming datasets only when there is no validation split.
+  eval_split_ratio: 0.1
+  random_seed: 42
+  
+  # Fallback data (if no files found)
   use_fallback: true
   fallback_multiplier: 10  # Repeat fallback data N times
 
 # ===== VOCABULARY GENERATION CONFIGURATION =====
 vocabulary_generation:
   # Set to true to run the tokenizer script automatically before training starts.
-  # enable: true 
-  enable: false  # Disable automatic vocabulary generation for now
+  enable: true 
   
   # The full, absolute path to the tokenizer project's main script.
   script_path: "/home/orrz/gpufs/projects/Tokenizers/main.py"
@@ -126,47 +117,38 @@ vocabulary_generation:
   algorithm_target: "sentencepiece_bpe"
   # algorithm_target: "sentencepiece_unigram"
   
-  # Data path for the Tokenizers project (LEGACY - for backward compatibility)
-  # This tells the Tokenizers project where to find the training data
-  # NOTE: Use vocabulary_generation.data.path instead for more control
+  # Data path for the Tokenizers project (should match your Sanskrit data)
+  # This tells the Tokenizers project where to find the Sanskrit training data
   # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data"
   # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/sanskrit_iast_ready_512.txt"
   # data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_devanagari"
   data_path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
-
+  
   # Number of tokens to generate
   # num_tokens: 16
   # num_tokens: 2048
   num_tokens: 4096  # Number of tokens to generate for the vocabulary
-
+  
   data:
     # Data source type: "local_files" or "huggingface"
-    # IMPORTANT: Should match the data.source_type above for consistency
     # source_type: "local_files"
     source_type: "huggingface"
-
+    
     # FOR LOCAL FILES:
     # Absolute path to the data file or directory
-    # Options:
-    #   - Single JSONL file: "/path/to/file.jsonl"
-    #   - Directory with multiple files: "/path/to/directory"
-    #   - TXT file: "/path/to/file.txt"
-    path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
-    # path: "/home/orrz/gpufs/projects/gemma3/data/he_cc100_1M.jsonl"  # Hebrew CC100 local file
-
+    # path: "/home/orrz/gpufs/projects/gemma3/sanskrit_data/00_sanskrit_iast"
+    
     # FOR HUGGINGFACE DATASETS:
     # HuggingFace dataset configuration (used when source_type is "huggingface")
     hf_dataset_name: "cc100"
-    hf_dataset_config: "he"  # Language/subset code (e.g., "he", "ar", "sa")
+    hf_dataset_config: "he"  # Language/subset code
     hf_text_column: "text"
     hf_split: "train"
     hf_streaming: true
     hf_trust_remote_code: false
-
+    
     # Debug/sampling settings (applies to both local and HF)
-    # 0 = use all data, >0 = sample N texts for quick testing
-    # For tokenizer training, 5000-10000 samples is usually sufficient
-    # debug: 5000
+    debug: 5000  # 0 = use all data, >0 = sample N texts for quick testing
 
   
 
@@ -175,8 +157,8 @@ vocabulary:
   # Enable/disable custom vocabulary expansion
   # - false: Use only original Gemma-3 vocabulary (safe default, no model changes)
   # - true: Load and add custom tokens from PKL file (expands vocabulary and model)
-  use_custom_vocabulary: false
-  # use_custom_vocabulary: true
+  # use_custom_vocabulary: false
+  use_custom_vocabulary: true
   
 
   
@@ -229,7 +211,7 @@ training:
   # CRITICAL: Warmup steps must be sufficient for stable training (QUICK WIN #2)
   # warmup_steps: 5  # TOO LOW - will cause gradient explosion
   # warmup_steps: 50  # Still too low for vocabulary expansion
-  warmup_steps: 1  # RECOMMENDED - prevents gradient explosion and embedding divergence
+  warmup_steps: 150  # RECOMMENDED - prevents gradient explosion and embedding divergence
   # Rule of thumb: warmup_steps should be 5-10% of total training steps
 
   # Learning rate scheduler (QUICK WIN #5)
@@ -449,11 +431,11 @@ debug:
   # limit_train_samples: 1024 
   # limit_eval_samples: 128   # Limit eval samples for quick testing
 
-  # limit_train_samples: 100000
-  # limit_eval_samples: 10000   # Limit eval samples for quick testing
+  limit_train_samples: 100000
+  limit_eval_samples: 10000   # Limit eval samples for quick testing
   
-  limit_train_samples: 1000
-  limit_eval_samples: 100 
+  # limit_train_samples: 10000
+  # limit_eval_samples: 1000  
   # Training overrides for testing
   # test_epochs: 1          # Override epochs when test_mode is true
   # test_batch_size: 4      # Override batch size when test_mode is true

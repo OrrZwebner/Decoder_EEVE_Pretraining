@@ -933,11 +933,11 @@ def print_dataset_info(train_dataset: Union[Dataset, HFDataset, IterableDataset]
     if 'vocabulary' in config:
         vocab_config = config['vocabulary']
         if vocab_config.get('use_custom_vocabulary', False):
-            print(f"  🔤 Custom vocabulary: ENABLED")
+            print(f"  🔤 Custom vocabulary: ENABLED for the full training")
             str_num_tokens = str(config.get('vocabulary_generation', {}).get('num_tokens', ""))
             vocab_file_path = vocab_config['vocabulary_full_path'] + str_num_tokens +'.pkl'
             print(f"  Vocabulary file: {vocab_file_path}")
-            print(f"  Addition method: {vocab_config.get('add_tokens_method', 'N/A')}")
+            print(f"  Addition method in stage 1: {vocab_config.get('add_tokens_method', 'N/A')}")
         else:
             print(f"  🔤 Custom vocabulary: DISABLED (using original tokenizer)")
     

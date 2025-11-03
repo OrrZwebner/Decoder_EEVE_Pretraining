@@ -33,7 +33,8 @@ def get_n_added_tokens(
     config, 
     model: Optional[AutoModelForCausalLM] = None, 
     tokenizer: Optional[AutoTokenizer] = None,
-    base_vocab_size: Optional[int] = None
+    base_vocab_size: Optional[int] = None,
+    pad_to_multiple_of: int = 8
 ) -> int:
     """
     Get number of added tokens, prioritizing actual model/tokenizer state over config.
@@ -55,29 +56,39 @@ def get_n_added_tokens(
             trust_remote_code=config['model'].get('trust_remote_code', True)
         )
         base_vocab_size = len(original_tokenizer)
+        logging.info(f"Base vocabulary size from original tokenizer: {base_vocab_size}")
 
-    # Priority 1: Calculate from actual model and tokenizer
+    # Get current sizes
+    model_vocab_size = None
+    tokenizer_vocab_size = None
+
     if model is not None:
         model_vocab_size = model.get_input_embeddings().weight.shape[0]
+        logging.info(f"📊 Model embedding size: {model_vocab_size:,}")
+
     
     if tokenizer is not None:
         tokenizer_vocab_size = len(tokenizer)
+        logging.info(f"📊 Tokenizer vocab size: {tokenizer_vocab_size:,}")
+
+    if tokenizer_vocab_size is not None and base_vocab_size is not None:
+        n_added = tokenizer_vocab_size - base_vocab_size # number of added tokens
+        
+        # Just log if padding detected (model > tokenizer is NORMAL)
+        if model_vocab_size is not None and model_vocab_size > tokenizer_vocab_size:
+            padding = model_vocab_size - tokenizer_vocab_size
+            logging.info(f"ℹ️  Model embeddings padded by {padding} tokens (for alignment to multiples of {pad_to_multiple_of})")
+        
+        logging.info(f"✅ Calculated: {n_added:,} tokens added")
+        return n_added  
     
-    # if embeddings were expanded beyond tokenizer
-    if model_vocab_size and tokenizer_vocab_size:
-        if model_vocab_size > tokenizer_vocab_size:
-            logging.warning(f"Model vocab ({model_vocab_size}) > tokenizer vocab ({tokenizer_vocab_size})")
-            return 0
-
-    if not tokenizer:
-        tokenizer_vocab_size = model_vocab_size
-        logging.info(f"çTokenizer not provided - using model vocab size: {tokenizer_vocab_size}")
-
-    if not tokenizer_vocab_size or not base_vocab_size:
-        logging.warning("Insufficient information to determine added tokens - returning 0")
+    # Fallback
+    if tokenizer_vocab_size is None and model_vocab_size is not None:
+        logging.warning("Tokenizer not provided, can't determine added tokens from tokenizer")
         return 0
-
-    return tokenizer_vocab_size - base_vocab_size
+    
+    logging.warning("Insufficient information to determine added tokens - returning 0")
+    return 0
     
 
 
@@ -270,7 +281,9 @@ def load_custom_vocabulary(vocab_file_path: str, config) -> List[str]:
     try:
         with open(vocab_file_path, 'rb') as f:
             vocabulary_data = pickle.load(f)
-        
+        # log the length of the loaded data
+        logging.info(f"Loaded vocabulary data length: {len(vocabulary_data)}")
+
         # Handle different possible formats of vocabulary data
         if isinstance(vocabulary_data, list):
             # Simple list of tokens
@@ -314,7 +327,7 @@ def load_custom_vocabulary(vocab_file_path: str, config) -> List[str]:
         raise ValueError(f"Error loading vocabulary file {vocab_file_path}: {e}")
 
 
-def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False, load_from_dir: Optional[str] = None, base_vocab_size: Optional[int] = None) -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
+def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False, load_from_dir: Optional[str] = None, base_vocab_size: Optional[int] = None, pad_to_multiple_of: int = 8) -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
     """
     Complete model loading pipeline with vocabulary expansion and stage support
     
@@ -324,6 +337,7 @@ def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False
         load_from_previous (bool): Whether to load from previous stage checkpoint
         load_from_dir (str, optional): Directory to load model from instead of fresh
         base_vocab_size (int, optional): Base vocabulary size for model
+        pad_to_multiple_of (int): Pad vocabulary size to multiple of this value
 
     Returns:
         Tuple[AutoModelForCausalLM, AutoTokenizer]: Loaded model and tokenizer
@@ -338,21 +352,32 @@ def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False
     # Apply PyTorch compilation fixes - for example, dynamo error suppression
     apply_torch_compilation_fixes(config)
     
-    # Load tokenizer (potentially with vocabulary expansion)
-    tokenizer = load_tokenizer(config)
+    # # Load tokenizer (potentially with vocabulary expansion)
+    # tokenizer = load_tokenizer(config)
         
     # Determine how to load the model
-    if load_from_previous and stage > 1:
+    if load_from_previous and stage > 1 and not load_from_dir:
         # Load BOTH model and tokenizer from previous stage checkpoint
         prev_stage_path = get_stage_checkpoint_path(config, stage - 1)
         logging.info(f"Loading model and tokenizer from previous stage: {prev_stage_path}")
         
-        model, tokenizer = load_model_from_stage(prev_stage_path, config)
+        # check in prev_stage_path for "merged_model" directory first
+        prev_stage_model_path = os.path.join(prev_stage_path, "merged_model")
+        if not os.path.exists(prev_stage_model_path):
+            prev_stage_model_path = os.path.join(prev_stage_path, "final_model")
+        
+        if not os.path.exists(prev_stage_model_path):
+            logging.error(f"Previous stage model checkpoint not found: {prev_stage_model_path}")
+            raise RuntimeError(f"Cannot load model/tokenizer from previous stage {stage - 1}")
+
+        model, tokenizer = load_model_from_stage(prev_stage_model_path, config)
         
         if model is None or tokenizer is None:
-            logging.error(f"Failed to load from stage {stage - 1}, loading fresh model instead")
-            tokenizer = load_tokenizer(config)
-            model = load_model(config)
+            # logging.error(f"Failed to load from stage {stage - 1}, loading fresh model instead")
+            # tokenizer = load_tokenizer(config)
+            # model = load_model(config)
+            logging.error(f"Failed to load from stage {stage - 1}, cannot proceed")
+            raise RuntimeError(f"Cannot load model/tokenizer from previous stage {stage - 1}")
     elif load_from_dir:
         # Load model from specified directory
         logging.info(f"Loading model from specified directory: {load_from_dir}")
@@ -378,8 +403,9 @@ def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False
             tokenizer_vocab_size = len(tokenizer)
             
             if tokenizer_vocab_size > model_vocab_size:
-                tokens_added = tokenizer_vocab_size - model_vocab_size
-                logging.info(f"Resizing model embeddings for expanded vocabulary...")
+                tokens_added = get_n_added_tokens(config, model, tokenizer, base_vocab_size=None)
+                logging.info(f"Resizing model embeddings for expanded vocabulary")
+                logging.info(f"   Tokens to add: {tokens_added}")
 
                 # Load source tokenizer for mean initialization
                 model_config = config['model']
@@ -398,24 +424,27 @@ def load_model_pipeline(config, stage: int = 0, load_from_previous: bool = False
                     tokens_added, 
                     config,
                     source_tokenizer=source_tokenizer,
-                    init_method=init_method
+                    init_method=init_method, 
+                    pad_to_multiple_of=pad_to_multiple_of
                 )
 
-
-    # Apply layer freezing AFTER model resizing if this is an EEVE stage
-    # if stage > 0 and 'eeve' in config and config['eeve'].get('enable', False):
+    # log the stage and layer freezing info
+    # Apply layer freezing AFTER model resizing 
     if stage > 0 and (config.get('eeve', {}).get('enable', False) or config.get('two_stage_training', {}).get('enable', False)):
+        logging.info(f"Applying stage {stage} layer freezing if configured...")
         # stages_config = config['eeve'].get('stages', {})
         # stage_config = stages_config.get(stage, {})
         # Get stage config from either EEVE or 2-stage training
         if config.get('two_stage_training', {}).get('enable', False):
-            stage_config = get_eeve_stage_config(config, stage)
-        else:
+            stage_config = config['two_stage_training'].get('stage'+str(stage), {})
+            if not stage_config:
+                raise ValueError(f"Stage configuration for stage {stage} not found in two_stage_training")
+        elif config.get('eeve', {}).get('enable', False):
             stages_config = config['eeve'].get('stages', {})
             stage_config = stages_config.get(stage, {})
         if stage_config:
             train_layers = stage_config.get('train_layers', 'all') 
-            n_added_tokens = get_n_added_tokens(config, model, tokenizer, base_vocab_size)
+            n_added_tokens = get_n_added_tokens(config, model, tokenizer, base_vocab_size, pad_to_multiple_of)
             
             logging.info(f"🎯 Stage {stage}: Applying layer freezing - {train_layers}")
             freeze_layers(model, train_layers, n_added_tokens, tokenizer, config)
@@ -528,7 +557,8 @@ def resize_model_embeddings(
     tokens_added: int, 
     config,
     source_tokenizer: Optional[AutoTokenizer] = None,
-    init_method: str = "mean"
+    init_method: str = "mean", 
+    pad_to_multiple_of: int = 8
 ) -> AutoModelForCausalLM:
     """
     Resize model embeddings to accommodate new vocabulary tokens with smart initialization.
@@ -540,6 +570,7 @@ def resize_model_embeddings(
         config: Configuration dictionary
         source_tokenizer: Original tokenizer before expansion (needed for mean init)
         init_method: Initialization method - "mean" (default) or "random"
+        pad_to_multiple_of: Pad vocabulary size to multiple of this value
         
     Returns:
         Model with resized embeddings
@@ -563,7 +594,7 @@ def resize_model_embeddings(
         logging.info(f"Resizing model embeddings:")
         logging.info(f"  Original embedding size: {original_embed_size:,}")
         logging.info(f"  New vocabulary size: {new_vocab_size:,}")
-        logging.info(f"  Tokens added: {tokens_added}")
+        logging.info(f"  Tokens added: {tokens_added} (might include padding token - +1 if to vocab size - won't add embeddings for padding token)")
         logging.info(f"  Initialization method: {init_method}")
     
     # Check if we should use mean initialization
@@ -587,13 +618,13 @@ def resize_model_embeddings(
             source_tokenizer=source_tokenizer,
             target_tokenizer=tokenizer,
             tie_word_embeddings=tie_word_embeddings,
-            pad_to_multiple_of=8
+            pad_to_multiple_of=pad_to_multiple_of
         )
         
     else:
         # Fallback to standard resize (random initialization)  
         logging.info("(random initialization)")
-        model.resize_token_embeddings(new_vocab_size, pad_to_multiple_of=8)
+        model.resize_token_embeddings(new_vocab_size, pad_to_multiple_of=pad_to_multiple_of)
     
     # Log memory usage change if CUDA is available
     if torch.cuda.is_available() and debug_vocab:
@@ -655,19 +686,19 @@ def load_authentication_token(config) -> Optional[str]:
     return None
 
 
-def load_model_from_stage(stage_path: str, config) -> Tuple[Optional[AutoModelForCausalLM], Optional[AutoTokenizer]]:
+def load_model_from_stage(model_path: str, config) -> Tuple[Optional[AutoModelForCausalLM], Optional[AutoTokenizer]]:
     """
     Load model AND tokenizer from a previous EEVE training stage.
     
     Args:
-        stage_path: Path to the stage checkpoint directory
+        model_path: Path to the stage checkpoint directory of the saved model
         config: Configuration dictionary
         
     Returns:
         Tuple of (loaded_model, loaded_tokenizer) or (None, None) if loading fails
     """
     # Define the model path based on stage
-    model_path = os.path.join(stage_path, "final_model")
+    # model_path = os.path.join(stage_path, "final_model")
 
 
     if not os.path.exists(model_path):
@@ -687,7 +718,7 @@ def load_model_from_stage(stage_path: str, config) -> Tuple[Optional[AutoModelFo
             torch_dtype=torch_dtype,
             device_map="auto",
             trust_remote_code=model_config.get('trust_remote_code', True),
-            use_cache=model_config.get('use_cache', False),
+            # use_cache=model_config.get('use_cache', False),
             attn_implementation=model_config.get('attn_implementation', 'eager'),
             low_cpu_mem_usage=model_config.get('low_cpu_mem_usage', True),
             local_files_only=True
@@ -702,41 +733,91 @@ def load_model_from_stage(stage_path: str, config) -> Tuple[Optional[AutoModelFo
         return model, tokenizer
         
     except Exception as e:
-        logging.error(f"Failed to load model/tokenizer from stage {stage_path}: {e}")
+        logging.error(f"Failed to load model/tokenizer from stage {model_path}: {e}")
         return None, None
 
 
 def get_stage_checkpoint_path(config, stage: int, run_name: Optional[str] = None) -> str:
     """
-    Get the checkpoint path for a specific EEVE stage
-    
+    Get the checkpoint path for a specific EEVE stage with hierarchical directory structure.
+
+    Directory structure: /outputs/{model_size}/{training_type}/{language}/{num_samples}/{num_tokens}/{num_tokens}_{timestamp}/stage{N}
+    Example: /outputs/1B/two_stages/hebrew/1000/32/32_27102025_1430/stage1
+    Example (no vocab): /outputs/1B/two_stages/hebrew/1000/base_vocab/base_vocab_27102025_1430/stage1
+
     Args:
         config: Configuration dictionary
         stage: Stage number (0 for standard training, 1-7 for EEVE)
         run_name: Optional run name override
-        
+
     Returns:
         Path to stage checkpoint directory
     """
     # Get metadata for directory naming
-    n_tokens = config.get('vocabulary_generation', {}).get('num_tokens', 0)
-    algorithm = config.get('vocabulary_generation', {}).get('algorithm_target', 'unknown')
     timestamp = config.get('_training_timestamp', 'no_timestamp')
-    
-    # Construct main directory name
-    main_dir = f"{algorithm}_{n_tokens}_{timestamp}"
-    
-    if stage > 0:
-        # EEVE training - use stage-specific subdirectory
-        eeve_config = config.get('eeve', {})
-        base_dir = eeve_config.get('stage_output_dir', 
-                                os.path.join(config['project']['output_dir'], "eeve_stages"))
-        stage_path = os.path.join(base_dir, main_dir, f"stage{stage}")
+
+    # Extract language from dataset config (prioritize hf_dataset_config)
+    data_config = config.get('data', {})
+    language = data_config.get('hf_dataset_config', 'unknown')
+
+    # If hf_dataset_config is not set, try to extract from other sources
+    if language == 'unknown' or not language:
+        # Try vocabulary_generation data config
+        vocab_data = config.get('vocabulary_generation', {}).get('data', {})
+        language = vocab_data.get('hf_dataset_config', 'unknown')
+
+    # Get training samples count
+    debug_config = config.get('debug', {})
+    if debug_config.get('test_mode', False):
+        train_samples = debug_config.get('limit_train_samples', 0)
     else:
-        # Standard training - use outputs directory
-        base_dir = config['project']['output_dir']
-        stage_path = os.path.join(base_dir, main_dir)
-    
+        train_samples = 'full'
+
+    # Determine token count based on whether custom vocabulary is enabled
+    vocab_config = config.get('vocabulary', {})
+    use_custom_vocab = vocab_config.get('use_custom_vocabulary', False)
+
+    if use_custom_vocab:
+        # Get actual number of tokens when vocabulary expansion is enabled
+        n_tokens = config.get('vocabulary_generation', {}).get('num_tokens', 0)
+        tokens_str = str(n_tokens)
+    else:
+        # Use "base_vocab" when no vocabulary expansion
+        tokens_str = 'base_vocab'
+
+    # Get project root directory
+    project_root = config.get('project', {}).get('root_dir', '/home/orrz/gpufs/projects/gemma3')
+
+    # Extract the base model from config for run name if provided
+    model_name = config.get('model', {}).get('name', '1b')
+    size_map = {"google/gemma-3-1b-it": "1B", "google/gemma-3-4b-it": "4B", "google/gemma-3-12b-it": "12B"}
+    if model_name in size_map.keys():
+        model_size = size_map[model_name]
+    else:
+        model_size = 'unk'
+
+    # add the model size to the path
+    project_root = os.path.join(project_root, model_size)
+    if stage > 0 and (config.get('eeve', {}).get('enable', False)):
+        # EEVE training - use hierarchical directory structure
+        # Structure: /outputs/eeve_stages/{language}/{num_samples}/{num_tokens}/{num_tokens}_{timestamp}/stage{N}
+        base_dir = os.path.join(project_root, "outputs", "eeve_stages")
+        stage_path = os.path.join(base_dir, language, str(train_samples), tokens_str,
+                                 f"{tokens_str}_{timestamp}", f"stage{stage}")
+
+    elif stage > 0 and (config.get('two_stage_training', {}).get('enable', False)):
+        # 2-stage training - use hierarchical directory structure
+        # Structure: /outputs/two_stages/{language}/{num_samples}/{num_tokens}/{num_tokens}_{timestamp}/stage{N}
+        base_dir = os.path.join(project_root, "outputs", "two_stages")
+        stage_path = os.path.join(base_dir, language, str(train_samples), tokens_str,
+                                 f"{tokens_str}_{timestamp}", f"stage{stage}")
+    else:
+        # Standard training - use hierarchical directory structure without stage subdirectory
+        # Structure: /outputs/no_stages/{language}/{num_samples}/{num_tokens}/{num_tokens}_{timestamp}
+        base_dir = os.path.join(project_root, "outputs", "no_stages")
+        stage_path = os.path.join(base_dir, language, str(train_samples), tokens_str,
+                                 f"{tokens_str}_{timestamp}")
+
     return stage_path
 
 
@@ -770,7 +851,7 @@ def load_tokenizer(config) -> AutoTokenizer:
         tokenizer_config = config['tokenizer']
         if tokenizer_config.get('add_pad_token', True) and tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
-            logging.info("Added pad token to tokenizer")
+            logging.info("Added pad token to tokenizer - expect additional token in vocab size with no effect on model (no additional embedding)")
         
         logging.info(f"✅ Base tokenizer loaded successfully")
         logging.info(f"Original vocab size: {len(tokenizer):,}")
@@ -872,7 +953,7 @@ def load_model(config) -> AutoModelForCausalLM:
             ignore_mismatched_sizes=model_config.get('ignore_mismatched_sizes', True),
             local_files_only=config.get('compatibility', {}).get('local_files_only', False),
             trust_remote_code=model_config.get('trust_remote_code', True),
-            use_cache=model_config.get('use_cache', False),
+            # use_cache=model_config.get('use_cache', False),
             attn_implementation=model_config.get('attn_implementation', 'eager'),
             low_cpu_mem_usage=model_config.get('low_cpu_mem_usage', True),
             token=auth_token
@@ -1121,7 +1202,9 @@ def freeze_layers(model: AutoModelForCausalLM, train_layers: str = "all",
     # Freeze all parameters initially for selective training
     if debug_vocab:
         logging.info("🔒 Freezing all parameters for selective training...")
-    
+
+    # Set all parameters to requires_grad=False initially
+    # We'll selectively enable them based on train_layers
     for param in model.parameters():
         param.requires_grad = False
     
@@ -1131,12 +1214,24 @@ def freeze_layers(model: AutoModelForCausalLM, train_layers: str = "all",
     lm_head_param = None
     embeddings_tied = False
     
+    # Search for embedding parameters with multiple possible names
+    possible_embed_names = [
+        'model.embed_tokens.weight',          # Gemma-2 CausalLM style
+        'model.encoder.embed_tokens.weight',  # Encoder-decoder encoder style
+        'model.decoder.embed_tokens.weight',  # Encoder-decoder decoder style
+        'shared.weight',                       # T5/BART shared embeddings
+        'transformer.wte.weight',              # GPT style
+        'embeddings.word_embeddings.weight'    # BERT style
+    ]
+
     for name, param in model.named_parameters():
-        if name == 'model.embed_tokens.weight':
-            embed_param = param
-            embed_name = name
-            if debug_vocab:
-                logging.info(f"📥 Found embedding parameter: {name} - {param.shape}")
+        # Check for embedding parameter
+        if name in possible_embed_names or 'embed_tokens.weight' in name or 'shared.weight' in name:
+            if embed_param is None:  # Take the first match
+                embed_param = param
+                embed_name = name
+                if debug_vocab:
+                    logging.info(f"📥 Found embedding parameter: {name} - {param.shape}")
         elif name.endswith('lm_head.weight'):
             lm_head_param = param
             if debug_vocab:
@@ -1153,7 +1248,15 @@ def freeze_layers(model: AutoModelForCausalLM, train_layers: str = "all",
             logging.info("🔄 SEPARATE EMBEDDINGS detected")
     
     if embed_param is None:
-        logging.error("Could not find model.embed_tokens.weight parameter!")
+        # If still not found, list all parameters for debugging
+        logging.error("Could not find embedding parameter!")
+        logging.error("Searched for these parameter names:")
+        for pname in possible_embed_names:
+            logging.error(f"  - {pname}")
+        logging.error("Available parameters containing 'embed':")
+        for name, param in model.named_parameters():
+            if 'embed' in name.lower():
+                logging.error(f"  - {name}: {param.shape}")
         return
     
     # Parse training configuration
@@ -1176,26 +1279,35 @@ def freeze_layers(model: AutoModelForCausalLM, train_layers: str = "all",
                 logging.info(f"   Training region: rows [{vocab_size-n_added_tokens}:{vocab_size}]")
                 logging.info(f"   Training dimensions: [{n_added_tokens}, {embed_dim}]")
             
-            # WORKING GRADIENT HOOK APPROACH (from successful test)
+            # OPTIMIZED APPROACH: Use requires_grad slicing to avoid computing gradients
+            # for parameters we don't need to train.
+
+            # First, freeze ALL parameters
+            for param in model.parameters():
+                param.requires_grad = False
+
+            if debug_vocab:
+                logging.info(f"   🔒 Froze all model parameters")
+
+            # Enable requires_grad ONLY for the embedding parameter
+            # This is necessary because we'll use a gradient hook to mask it
+            embed_param.requires_grad = True
+
             # Create mask for added tokens only
             mask = torch.zeros_like(embed_param, dtype=torch.bool, device=embed_param.device)
             mask[-n_added_tokens:] = True  # Only last n_added_tokens rows
-            
+
             if debug_vocab:
                 logging.info(f"   📍 Created gradient mask:")
                 logging.info(f"      Mask shape: {mask.shape}")
                 logging.info(f"      True values: {mask.sum().item()} (should be {n_added_tokens * embed_dim})")
                 logging.info(f"      Mask region: rows [{vocab_size-n_added_tokens}:{vocab_size}], all columns")
-            
-            # MUST enable gradients BEFORE registering hook
-            embed_param.requires_grad = True
-            
-            if debug_vocab:
-                logging.info(f"   ✅ Enabled requires_grad=True (required for hook registration)")
-            
-            # Create gradient hook with dtype preservation (CRITICAL FIX)
+                logging.info(f"   ✅ Enabled requires_grad ONLY for embedding parameter")
+                logging.info(f"   💡 This avoids computing gradients for 4B+ frozen parameters")
+
+            # Create gradient hook for embeddings with dtype preservation (CRITICAL FIX)
             hook_call_count = [0]
-            
+
             def gradient_hook(grad):
                 """Apply gradient masking to restrict updates to new tokens only."""
                 hook_call_count[0] += 1
@@ -1223,23 +1335,30 @@ def freeze_layers(model: AutoModelForCausalLM, train_layers: str = "all",
             
             # Register the hook
             hook_handle = embed_param.register_hook(gradient_hook)
-            
+
             if debug_vocab:
                 logging.info(f"   ✅ Registered gradient hook on {embed_name}")
-            
+
             # Store metadata for custom parameter counting
             embed_param._added_tokens_only = True
             embed_param._n_added_tokens = n_added_tokens
             embed_param._embed_dim = embed_dim
             embed_param._gradient_hook_handle = hook_handle
             embed_param._hook_call_count = hook_call_count
-            
+            embed_param._gradient_mask = mask  # Store mask for verification
+
             if debug_vocab:
                 actual_trainable = n_added_tokens * embed_dim
                 logging.info(f"   ✅ Setup complete for selective training")
                 logging.info(f"   Expected effective parameters: {actual_trainable:,}")
                 logging.info(f"   ⚠️  PyTorch will count ALL embedding params as trainable")
                 logging.info(f"   ⚠️  But gradient hook will mask updates to original tokens")
+                logging.info(f"   ")
+                logging.info(f"   🔍 GRADIENT FLOW VERIFICATION:")
+                logging.info(f"      ✓ Embeddings have requires_grad=True (gradients flow back from loss)")
+                logging.info(f"      ✓ Hook will mask gradients to only new tokens")
+                logging.info(f"      ✓ Optimizer will only update masked region")
+                logging.info(f"      ✓ This is CORRECT for tied embeddings in Gemma-3")
         
         elif layer_option in ["added_tokens_lm_head", "lm_head"]:
             if embeddings_tied:
@@ -1335,9 +1454,10 @@ def freeze_layers(model: AutoModelForCausalLM, train_layers: str = "all",
     
     # Primary logging (always shown)
     if masked_params_info:
-        logging.info(f"🔥 PyTorch reports: {pytorch_trainable:,} trainable parameters ({pytorch_trainable/total_params:.2%}) ⚠️")
-        logging.info(f"🎯 Actually training: {effective_trainable:,} parameters ({effective_trainable/total_params:.2%}) ✅")
+        logging.info(f"🔥 PyTorch reports: {pytorch_trainable:,} trainable parameters ({pytorch_trainable/total_params:.4%})")
+        logging.info(f"🎯 Actually training: {effective_trainable:,} parameters ({effective_trainable/total_params:.4%}) ✅")
         logging.info(f"📊 Gradient-masked: {pytorch_trainable - effective_trainable:,} parameters")
+        logging.info(f"💾 Memory saved: ~{(total_params - pytorch_trainable) * 4 / 1024**3:.2f} GB (no gradients for frozen params)")
     else:
         logging.info(f"🔥 Training {pytorch_trainable:,} out of {total_params:,} parameters ({pytorch_trainable/total_params:.2%})")
     

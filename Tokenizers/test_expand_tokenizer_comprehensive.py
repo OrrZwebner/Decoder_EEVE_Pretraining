@@ -106,11 +106,9 @@ class TestExpandTokenizer(unittest.TestCase):
         # Test expansion
         try:
             expanded_tokenizer, tokens_added, new_tokens = processor.expand_tokenizer(
-                learned_tokens=[],  # Not used for train_new_from_iterator
                 algorithm_name=model_config["algorithm"],
                 max_tokens=self.max_tokens_to_add,
-                training_corpus=corpus,
-                merges=None
+                training_corpus=corpus
             )
 
             new_vocab_size = len(expanded_tokenizer.get_vocab())
@@ -214,11 +212,9 @@ class TestExpandTokenizer(unittest.TestCase):
 
         with self.assertRaises(ValueError) as context:
             processor.expand_tokenizer(
-                learned_tokens=[],
                 algorithm_name="INVALID_ALGO",
                 max_tokens=100,
-                training_corpus=ENGLISH_CORPUS,
-                merges=None
+                training_corpus=ENGLISH_CORPUS
             )
 
         self.assertIn("Only BPE and SENTENCEPIECE_BPE", str(context.exception))
@@ -230,11 +226,9 @@ class TestExpandTokenizer(unittest.TestCase):
 
         with self.assertRaises(ValueError) as context:
             processor.expand_tokenizer(
-                learned_tokens=[],
                 algorithm_name="BPE",
                 max_tokens=100,
-                training_corpus=None,  # Missing corpus
-                merges=None
+                training_corpus=[]  # Empty corpus
             )
 
         self.assertIn("Training corpus is required", str(context.exception))
@@ -286,11 +280,9 @@ class TestTokenizerCompression(unittest.TestCase):
 
         # Expand tokenizer
         expanded_tokenizer, tokens_added, new_tokens = processor.expand_tokenizer(
-            learned_tokens=[],
             algorithm_name="BPE",
             max_tokens=50,  # Smaller for speed
-            training_corpus=corpus,
-            merges=None
+            training_corpus=corpus
         )
 
         # Test compression on held-out text

@@ -66,23 +66,21 @@ class BaseProcessor:
         """
         raise NotImplementedError("Subclasses must implement process_tokens_for_model")
     
-    def expand_tokenizer(self, learned_tokens: List[str], algorithm_name: str,
-                                max_tokens: int, training_corpus: Optional[List[str]] = None,
-                                merges: Optional[List[str]] = None, enforce_max_tokens: bool = True,
+    def expand_tokenizer(self, algorithm_name: str, max_tokens: int,
+                                training_corpus: List[str],
+                                enforce_max_tokens: bool = True,
                                 vocab_buffer_multiplier: float = 2.0) -> Tuple[Any, int, List[str]]:
             """
             Add learned tokens to the original tokenizer using train_new_from_iterator approach.
 
-            For BPE and SentencePiece BPE algorithms, uses train_new_from_iterator approach when training_corpus is provided.
+            For BPE and SentencePiece BPE algorithms, uses train_new_from_iterator approach with training_corpus.
             When enforce_max_tokens=True, trains with a larger vocabulary buffer to ensure sufficient tokens are available
             for selection, then picks the most important max_tokens from the results.
 
             Args:
-                learned_tokens (List[str]): DEPRECATED - Tokens learned from Sanskrit training (not used with train_new_from_iterator)
                 algorithm_name (str): Name of algorithm used to learn tokens (must be "BPE" or "SENTENCEPIECE_BPE")
                 max_tokens (int): Maximum number of tokens to add
-                training_corpus (Optional[List[str]]): Training corpus for tokenizer training (required)
-                merges (Optional[List[str]]): DEPRECATED - kept for backward compatibility but not used
+                training_corpus (List[str]): Training corpus for tokenizer training (required)
                 enforce_max_tokens (bool): If True, strictly enforce max_tokens limit by selecting most important tokens.
                                           If False, add all trained tokens (may exceed max_tokens). Default: True.
                 vocab_buffer_multiplier (float): When enforce_max_tokens=True, train with (max_tokens * this_value)
@@ -92,26 +90,9 @@ class BaseProcessor:
                 Tuple[Any, int, List[str]]: (expanded_tokenizer, num_tokens_added, processed_tokens)
 
             Raises:
-                ValueError: If algorithm is not BPE or SENTENCEPIECE_BPE, or training_corpus is not provided
+                ValueError: If algorithm is not BPE or SENTENCEPIECE_BPE, or training_corpus is empty
                 Exception: If train_new_from_iterator fails
             """
-            import warnings
-
-            # Deprecation warnings for unused parameters
-            if learned_tokens and len(learned_tokens) > 0:
-                warnings.warn(
-                    "The 'learned_tokens' parameter is deprecated and will be ignored. "
-                    "The tokenizer is trained using 'training_corpus' instead.",
-                    DeprecationWarning,
-                    stacklevel=2
-                )
-
-            if merges is not None:
-                warnings.warn(
-                    "The 'merges' parameter is deprecated and will be ignored.",
-                    DeprecationWarning,
-                    stacklevel=2
-                )
 
             expanded_tokenizer = copy.deepcopy(self.original_tokenizer)
             original_vocab = expanded_tokenizer.get_vocab()

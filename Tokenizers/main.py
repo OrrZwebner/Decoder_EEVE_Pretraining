@@ -301,17 +301,16 @@ def run_comparison_pipeline(config: Dict[str, Any], texts: List[str], logger: lo
                 # Step 4b: Expand model tokenizer
                 # For BPE, sanskrit_tokens_or_corpus is actually the corpus
                 # For other algorithms, it's the learned tokens
-                if algorithm.upper() == "BPE":
-                    # For BPE, pass corpus for training in expand_tokenizer
+                if algorithm.upper() in ["BPE", "SENTENCEPIECE_BPE"]:
+                    # For BPE and SentencePiece BPE, pass corpus for training in expand_tokenizer
                     expanded_tokenizer, tokens_added, processed_tokens = processor.expand_tokenizer(
-                        [], algorithm.upper(), config['training']['num_new_tokens'], 
+                        algorithm_name=algorithm.upper(),
+                        max_tokens=config['training']['num_new_tokens'],
                         training_corpus=sanskrit_tokens_or_corpus
                     )
                 else:
-                    # For non-BPE, pass learned tokens
-                    expanded_tokenizer, tokens_added, processed_tokens = processor.expand_tokenizer(
-                        sanskrit_tokens_or_corpus, algorithm.upper(), config['training']['num_new_tokens']
-                    )
+                    # For other algorithms - NOT SUPPORTED YET
+                    raise NotImplementedError(f"Algorithm {algorithm} not yet supported with new expand_tokenizer. Only BPE and SENTENCEPIECE_BPE are currently supported.")
                 
                 # --- START OF NEW LOG-SCORE CALCULATION ---
                 log_score = 0.0
@@ -524,21 +523,16 @@ def main() -> int:
                 # Step 2: Expand model tokenizer
                 # For BPE, raw_tokens_or_corpus is the corpus
                 # For other algorithms, it's the learned tokens
-                if algorithm.upper() == "BPE":
-                    # For BPE, training happens in expand_tokenizer
+                if algorithm.upper() in ["BPE", "SENTENCEPIECE_BPE"]:
+                    # For BPE and SentencePiece BPE, training happens in expand_tokenizer
                     expanded_tokenizer, tokens_added, processed_tokens = processor.expand_tokenizer(
-                        [], algorithm.upper(), config['training']['num_new_tokens'],
+                        algorithm_name=algorithm.upper(),
+                        max_tokens=config['training']['num_new_tokens'],
                         training_corpus=raw_tokens_or_corpus
                     )
                 else:
-                    # For non-BPE, process tokens first
-                    logger.info(f"Processing {len(raw_tokens_or_corpus)} raw tokens for model '{model_name}'...")
-                    processed_tokens = processor.process_tokens_for_model(raw_tokens_or_corpus, algorithm)
-                    
-                    # Step 2b: Expand model tokenizer for metrics calculation
-                    expanded_tokenizer, tokens_added, _ = processor.expand_tokenizer(
-                        raw_tokens_or_corpus, algorithm.upper(), config['training']['num_new_tokens']
-                    )
+                    # For other algorithms - NOT SUPPORTED YET
+                    raise NotImplementedError(f"Algorithm {algorithm} not yet supported with new expand_tokenizer. Only BPE and SENTENCEPIECE_BPE are currently supported.")
                 
                 # Step 2c: Initialize evaluation components
                 compression_evaluator = CompressionEvaluator(config)

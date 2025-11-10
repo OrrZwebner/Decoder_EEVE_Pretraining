@@ -165,10 +165,6 @@ class BaseProcessor:
                 tokens_added = 0
                 for token, idx in tqdm(new_json['model']['vocab'].items(), desc="Merging vocab"):
                     if token not in merged_vocab:
-                        # Reassign token index as len(merged_vocab) to ensure contiguous indexing.
-                        # This is necessary because the new tokenizer might have gaps in indices
-                        # or indices that conflict with the base vocabulary. By using sequential
-                        # indices, we ensure the merged vocabulary has no gaps and no conflicts.
                         merged_vocab[token] = len(merged_vocab)
                         tokens_added += 1
 
@@ -198,8 +194,6 @@ class BaseProcessor:
                 new_vocab = new_json['model']['vocab']
 
                 # Calculate default score for new tokens (low probability for unknown tokens)
-                # Unigram scores are log probabilities (negative values, lower = less probable)
-                # Find the minimum score in base vocab to use as reference
                 base_scores = [score for score in base_vocab.values() if isinstance(score, (int, float))]
                 if base_scores:
                     min_base_score = min(base_scores)
@@ -217,7 +211,6 @@ class BaseProcessor:
                 tokens_added = 0
                 for token, score in tqdm(new_vocab.items(), desc="Merging vocab"):
                     if token not in merged_vocab:
-                        # For Unigram, vocab items are (token, score) pairs where scores are log probabilities
                         # Preserve the score from new tokenizer if valid, otherwise use default low score
                         if isinstance(score, (int, float)):
                             merged_vocab[token] = score

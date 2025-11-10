@@ -68,7 +68,7 @@ class BaseProcessor:
     
     def expand_tokenizer(self, learned_tokens: List[str], algorithm_name: str,
                                 max_tokens: int, training_corpus: Optional[List[str]] = None,
-                                merges: Optional[List[str]] = None) -> Tuple[Any, int, List[str]]:
+                                merges: Optional[List[str]] = None, enforce_max_tokens: bool = True) -> Tuple[Any, int, List[str]]:
             """
             Add learned tokens to the original tokenizer using train_new_from_iterator approach.
 
@@ -81,6 +81,8 @@ class BaseProcessor:
                 max_tokens (int): Maximum number of tokens to add
                 training_corpus (Optional[List[str]]): Training corpus for tokenizer training (required)
                 merges (Optional[List[str]]): DEPRECATED - kept for backward compatibility but not used
+                enforce_max_tokens (bool): If True, strictly enforce max_tokens limit by selecting most important tokens.
+                                          If False, add all trained tokens (may exceed max_tokens). Default: True.
 
             Returns:
                 Tuple[Any, int, List[str]]: (expanded_tokenizer, num_tokens_added, processed_tokens)
@@ -160,24 +162,90 @@ class BaseProcessor:
                 original_vocab_size = len(merged_vocab)
                 original_merges_size = len(merged_merges)
 
-                # Merge new vocabulary
-                self.logger.info("Merging new vocabulary...")
-                tokens_added = 0
-                for token, idx in tqdm(new_json['model']['vocab'].items(), desc="Merging vocab"):
-                    if token not in merged_vocab:
-                        merged_vocab[token] = len(merged_vocab)
-                        tokens_added += 1
+                # Identify truly new tokens and merges
+                new_tokens_dict = {token: idx for token, idx in new_json['model']['vocab'].items()
+                                   if token not in merged_vocab}
+                new_merges_list = [merge for merge in new_json['model']['merges']
+                                   if merge not in merged_merges]
 
-                # Merge new merges
-                self.logger.info("Merging new merges...")
+                self.logger.info(f"Found {len(new_tokens_dict)} new tokens and {len(new_merges_list)} new merges")
+
+                if enforce_max_tokens:
+                    self.logger.info(f"✓ Enforcing max_tokens={max_tokens} limit (keeping most important by merge order)")
+                else:
+                    self.logger.info(f"✗ NOT enforcing max_tokens limit - will add all {len(new_tokens_dict)} new tokens")
+
+                # Add new merges and their corresponding tokens
+                tokens_added = 0
                 merges_added = 0
-                for merge in tqdm(new_json['model']['merges'], desc="Merging merges"):
-                    if merge not in merged_merges:
+                skipped_invalid = 0
+
+                for merge in tqdm(new_merges_list, desc="Adding merges & tokens"):
+                    # Check limit only if enforcing
+                    if enforce_max_tokens and tokens_added >= max_tokens:
+                        self.logger.info(f"Reached max_tokens limit ({max_tokens}), stopping merge addition")
+                        break
+
+                    # Calculate the resulting token from this merge
+                    if isinstance(merge, list):
+                        # Merge is a list like ["token1", "token2"]
+                        if len(merge) == 2:
+                            parts = merge
+                            resulting_token = parts[0] + parts[1]
+                        else:
+                            self.logger.warning(f"Unexpected merge list format: {merge} (expected 2 elements)")
+                            skipped_invalid += 1
+                            continue
+                    elif isinstance(merge, str):
+                        # Merge is a string like "token1 token2"
+                        parts = merge.split(' ', 1)
+                        if len(parts) == 2:
+                            resulting_token = parts[0] + parts[1]
+                        else:
+                            self.logger.warning(f"Unexpected merge string format: '{merge}' (expected 'token1 token2')")
+                            skipped_invalid += 1
+                            continue
+                    else:
+                        self.logger.warning(f"Unexpected merge type: {type(merge)}")
+                        skipped_invalid += 1
+                        continue
+
+                    # Check that component tokens exist in the current vocabulary
+                    component1, component2 = parts[0], parts[1]
+                    if component1 not in merged_vocab:
+                        self.logger.warning(f"Skipping corrupt merge: component '{component1}' not in vocabulary")
+                        skipped_invalid += 1
+                        continue
+                    if component2 not in merged_vocab:
+                        self.logger.warning(f"Skipping corrupt merge: component '{component2}' not in vocabulary")
+                        skipped_invalid += 1
+                        continue
+
+                    # Add merge and token if the token is actually new
+                    if resulting_token in new_tokens_dict:
+                        # Add the merge rule
                         merged_merges.append(merge)
                         merges_added += 1
 
+                        # Add the corresponding token
+                        if resulting_token not in merged_vocab:
+                            merged_vocab[resulting_token] = len(merged_vocab)
+                            tokens_added += 1
+                    else:
+                        # Token already exists, but merge rule might still be useful
+                        merged_merges.append(merge)
+                        merges_added += 1
+
+                if skipped_invalid > 0:
+                    self.logger.warning(f"⚠️  Skipped {skipped_invalid} invalid/corrupt merges during expansion")
+
                 self.logger.info(f"Original vocab: {original_vocab_size:,}, New vocab: {len(merged_vocab):,} (+{tokens_added})")
                 self.logger.info(f"Original merges: {original_merges_size:,}, New merges: {len(merged_merges):,} (+{merges_added})")
+
+                if enforce_max_tokens:
+                    self.logger.info(f"✅ Enforced max_tokens={max_tokens}: added {tokens_added} tokens (with {merges_added} merges)")
+                else:
+                    self.logger.info(f"✅ Added all available tokens: {tokens_added} tokens (with {merges_added} merges)")
 
                 # Update JSON with merged vocab and merges
                 new_json['model']['vocab'] = merged_vocab
@@ -205,11 +273,27 @@ class BaseProcessor:
                     default_score = -10.0
                     self.logger.warning(f"No scores found in base vocab, using fallback score: {default_score}")
 
+                # Identify truly new tokens
+                new_tokens_dict = {token: score for token, score in new_vocab.items()
+                                   if token not in base_vocab}
+
+                self.logger.info(f"Found {len(new_tokens_dict)} new tokens")
+
+                if enforce_max_tokens:
+                    self.logger.info(f"✓ Enforcing max_tokens={max_tokens} limit (keeping highest scoring tokens)")
+                    # Sort new tokens by score (descending - higher scores are better in Unigram)
+                    sorted_new_tokens = sorted(new_tokens_dict.items(), key=lambda x: x[1], reverse=True)
+                    # Limit to max_tokens
+                    tokens_to_add = sorted_new_tokens[:max_tokens]
+                else:
+                    self.logger.info(f"✗ NOT enforcing max_tokens limit - will add all {len(new_tokens_dict)} new tokens")
+                    tokens_to_add = new_tokens_dict.items()
+
                 # Merge vocabularies
                 self.logger.info("Merging Unigram vocabularies...")
                 merged_vocab = base_vocab.copy()
                 tokens_added = 0
-                for token, score in tqdm(new_vocab.items(), desc="Merging vocab"):
+                for token, score in tqdm(tokens_to_add, desc="Adding tokens"):
                     if token not in merged_vocab:
                         # Preserve the score from new tokenizer if valid, otherwise use default low score
                         if isinstance(score, (int, float)):
@@ -221,6 +305,11 @@ class BaseProcessor:
 
                 original_vocab_size = len(base_vocab)
                 self.logger.info(f"Original vocab: {original_vocab_size:,}, New vocab: {len(merged_vocab):,} (+{tokens_added})")
+
+                if enforce_max_tokens:
+                    self.logger.info(f"✅ Enforced max_tokens={max_tokens}: added {tokens_added} highest-scoring tokens")
+                else:
+                    self.logger.info(f"✅ Added all available tokens: {tokens_added} tokens")
 
                 # Update JSON with merged vocab
                 new_json['model']['vocab'] = merged_vocab

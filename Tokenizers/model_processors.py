@@ -68,12 +68,14 @@ class BaseProcessor:
     
     def expand_tokenizer(self, learned_tokens: List[str], algorithm_name: str,
                                 max_tokens: int, training_corpus: Optional[List[str]] = None,
-                                merges: Optional[List[str]] = None, enforce_max_tokens: bool = True) -> Tuple[Any, int, List[str]]:
+                                merges: Optional[List[str]] = None, enforce_max_tokens: bool = True,
+                                vocab_buffer_multiplier: float = 2.0) -> Tuple[Any, int, List[str]]:
             """
             Add learned tokens to the original tokenizer using train_new_from_iterator approach.
 
             For BPE and SentencePiece BPE algorithms, uses train_new_from_iterator approach when training_corpus is provided.
-            No fallback mechanisms - if train_new_from_iterator fails, the method raises an error.
+            When enforce_max_tokens=True, trains with a larger vocabulary buffer to ensure sufficient tokens are available
+            for selection, then picks the most important max_tokens from the results.
 
             Args:
                 learned_tokens (List[str]): DEPRECATED - Tokens learned from Sanskrit training (not used with train_new_from_iterator)
@@ -83,6 +85,8 @@ class BaseProcessor:
                 merges (Optional[List[str]]): DEPRECATED - kept for backward compatibility but not used
                 enforce_max_tokens (bool): If True, strictly enforce max_tokens limit by selecting most important tokens.
                                           If False, add all trained tokens (may exceed max_tokens). Default: True.
+                vocab_buffer_multiplier (float): When enforce_max_tokens=True, train with (max_tokens * this_value)
+                                                vocabulary to ensure sufficient tokens for selection. Default: 2.0.
 
             Returns:
                 Tuple[Any, int, List[str]]: (expanded_tokenizer, num_tokens_added, processed_tokens)
@@ -132,10 +136,20 @@ class BaseProcessor:
                     samples = training_corpus[start_idx : start_idx + 1000]
                     yield samples
 
-            # Train new tokenizer from base tokenizer using the corpus
-            # Target vocab size = original + max_tokens to get the desired number of new tokens
-            target_vocab_size = len(original_vocab) + max_tokens
-            self.logger.info(f"Training new tokenizer from base using corpus (target vocab size: {target_vocab_size:,})...")
+            # Calculate target vocabulary size
+            # When enforcing limits, use a buffer to ensure we get enough tokens for selection
+            if enforce_max_tokens:
+                # Train with buffer (e.g., 2x) to have enough tokens to select from
+                buffered_tokens = int(max_tokens * vocab_buffer_multiplier)
+                target_vocab_size = len(original_vocab) + buffered_tokens
+                self.logger.info(f"Training with {vocab_buffer_multiplier}x buffer: target vocab size = {target_vocab_size:,} "
+                               f"({buffered_tokens} new tokens to select {max_tokens} best from)")
+            else:
+                # Not enforcing, so just train for max_tokens
+                target_vocab_size = len(original_vocab) + max_tokens
+                self.logger.info(f"Training without buffer: target vocab size = {target_vocab_size:,}")
+
+            self.logger.info(f"Training new tokenizer from base using corpus...")
             new_tokenizer = expanded_tokenizer.train_new_from_iterator(
                 get_training_corpus(),
                 target_vocab_size

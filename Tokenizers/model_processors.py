@@ -136,10 +136,12 @@ class BaseProcessor:
                 # Use iterative buffer approach for BPE (similar to train_with_target_size)
                 buffer_multipliers = [1.5, 2, 3, 4, 5, 8, 12] if vocab_buffer_multiplier is None else [vocab_buffer_multiplier]
                 tokens_added = 0  # Track success across loop iterations
+                success = False
 
-                for multiplier in buffer_multipliers:
+                for i, multiplier in enumerate(buffer_multipliers):
                     buffered_tokens = int(max_tokens * multiplier)
                     target_vocab_size = buffered_tokens
+                    is_last_buffer = (i == len(buffer_multipliers) - 1)
                     self.logger.info(f"Trying {multiplier}x buffer: target vocab size = {target_vocab_size:,} "
                                    f"({buffered_tokens} new tokens to select {max_tokens} best from)")
 
@@ -215,15 +217,35 @@ class BaseProcessor:
                         )
 
                         # Success! Break out of buffer loop
+                        success = True
                         break
                     else:
-                        self.logger.info(f"❌ Buffer {multiplier}x insufficient: only {tokens_added} tokens (need {max_tokens}), trying next buffer...")
-                        continue
+                        # If this is the last buffer, apply what we have and warn
+                        if is_last_buffer:
+                            self.logger.warning(f"⚠️  Could not reach target of {max_tokens} tokens even with largest buffer ({multiplier}x). "
+                                              f"Adding {tokens_added} tokens (best available). "
+                                              f"The corpus may be too small or not diverse enough.")
+                            self.logger.info(f"Applied {multiplier}x buffer result: added {tokens_added} tokens via {merges_added} merges")
+                            self.logger.info(f"Original vocab: {original_vocab_size:,}, New vocab: {len(merged_vocab):,} (+{tokens_added})")
+                            self.logger.info(f"Original merges: {original_merges_size:,}, New merges: {len(merged_merges):,} (+{merges_added})")
 
-                # After buffer loop: check if BPE succeeded
-                if tokens_added < max_tokens:
-                    raise Exception(f"Failed to find {max_tokens} new tokens even with largest buffer (1000x). "
-                                  f"The corpus is too small or not diverse enough. Try with a larger or more diverse corpus.")
+                            # Update JSON with merged vocab and merges
+                            new_json['model']['vocab'] = merged_vocab
+                            new_json['model']['merges'] = merged_merges
+
+                            # Reconstruct tokenizer from merged JSON
+                            expanded_tokenizer._tokenizer = expanded_tokenizer.backend_tokenizer.from_str(
+                                json.dumps(new_json)
+                            )
+                            success = True
+                            break
+                        else:
+                            self.logger.info(f"❌ Buffer {multiplier}x insufficient: only {tokens_added} tokens (need {max_tokens}), trying next buffer...")
+                            continue
+
+                # After buffer loop: if we didn't succeed and didn't apply last buffer, something went wrong
+                if not success and tokens_added == 0:
+                    raise Exception(f"Failed to add any new tokens. The corpus may be too small or not diverse enough.")
 
             elif model_type == 'Unigram':
                 # For SentencePiece/Unigram tokenizers: merge vocab only (no merges)
@@ -271,7 +293,13 @@ class BaseProcessor:
 
                 original_vocab_size = len(base_vocab)
                 self.logger.info(f"Original vocab: {original_vocab_size:,}, New vocab: {len(merged_vocab):,} (+{tokens_added})")
-                self.logger.info(f"✅ Enforced max_tokens={max_tokens}: added {tokens_added} highest-scoring tokens")
+                
+                # Check if we reached the target
+                if tokens_added < max_tokens:
+                    self.logger.warning(f"⚠️  Could not reach target of {max_tokens} tokens. Added {tokens_added} tokens (all available new tokens). "
+                                      f"The corpus may be too small or not diverse enough to generate {max_tokens} unique tokens.")
+                else:
+                    self.logger.info(f"✅ Enforced max_tokens={max_tokens}: added {tokens_added} highest-scoring tokens")
 
                 # Update JSON with merged vocab
                 new_json['model']['vocab'] = merged_vocab

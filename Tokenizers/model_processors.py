@@ -13,8 +13,13 @@ Version: 2.0
 
 import logging
 import copy
-from typing import List, Tuple, Any, Dict
+import json
+import tempfile
+import os
+from typing import List, Tuple, Any, Dict, Optional
 from transformers import AutoTokenizer
+from tqdm import tqdm
+import sentencepiece as smp
 
 
 class BaseProcessor:
@@ -61,56 +66,268 @@ class BaseProcessor:
         """
         raise NotImplementedError("Subclasses must implement process_tokens_for_model")
     
-    def expand_tokenizer(self, learned_tokens: List[str], algorithm_name: str, 
-                                max_tokens: int) -> Tuple[Any, int, List[str]]:
+    def expand_tokenizer(self, algorithm_name: str, max_tokens: int,
+                                training_corpus: List[str],
+                                vocab_buffer_multiplier: float = None) -> Tuple[Any, int, List[str]]:
             """
-            Add learned tokens to the original tokenizer.
-            
+            Add learned tokens to the original tokenizer using train_new_from_iterator approach.
+
+            For BPE and SentencePiece BPE algorithms, uses train_new_from_iterator approach with training_corpus.
+            For BPE: Uses iterative buffered approach trying multiple buffer multipliers until enough tokens are found.
+            For Unigram: Trains once without buffering.
+
             Args:
-                learned_tokens (List[str]): Tokens learned from Sanskrit training
-                algorithm_name (str): Name of algorithm used to learn tokens
+                algorithm_name (str): Name of algorithm used to learn tokens (must be "BPE" or "SENTENCEPIECE_BPE")
                 max_tokens (int): Maximum number of tokens to add
-            
+                training_corpus (List[str]): Training corpus for tokenizer training (required)
+                vocab_buffer_multiplier (float, optional): For BPE: If provided, use only this multiplier.
+                                                          If None, iteratively try [1.5, 2, 3, 4, 5, 8, 12].
+                                                          For Unigram: Ignored (no buffering used).
+
             Returns:
                 Tuple[Any, int, List[str]]: (expanded_tokenizer, num_tokens_added, processed_tokens)
+
+            Raises:
+                ValueError: If algorithm is not BPE or SENTENCEPIECE_BPE, or training_corpus is empty
+                Exception: If train_new_from_iterator fails or (for BPE) cannot find enough tokens with any buffer
             """
+
             expanded_tokenizer = copy.deepcopy(self.original_tokenizer)
             original_vocab = expanded_tokenizer.get_vocab()
-            
+
             self.logger.info(f"\n=== EXPANDING {self.model_name.upper()} WITH {algorithm_name} ===")
-            # REPLACE: # ... (logging statements) ... WITH:
             self.logger.info(f"Original vocabulary size: {len(original_vocab):,}")
-            self.logger.info(f"Raw tokens received: {len(learned_tokens)}")
+            self.logger.info(f"Training corpus size: {len(training_corpus) if training_corpus else 0}")
+
+            # Support BPE and SentencePiece BPE with train_new_from_iterator
+            algo_upper = algorithm_name.upper()
+            if algo_upper not in ["BPE", "SENTENCEPIECE_BPE"]:
+                raise ValueError(f"Only BPE and SENTENCEPIECE_BPE algorithms are supported. Got: {algorithm_name}")
+
+            if training_corpus is None or len(training_corpus) == 0:
+                raise ValueError("Training corpus is required for tokenizer expansion")
+
+            self.logger.info(f"Using train_new_from_iterator approach for {algorithm_name} with {len(training_corpus)} corpus samples")
+
+            # Create training corpus generator
+            def get_training_corpus():
+                for start_idx in range(0, len(training_corpus), 1000):
+                    samples = training_corpus[start_idx : start_idx + 1000]
+                    yield samples
+
+            # First, train once to determine model type
+            # For Unigram, we'll train with max_tokens directly (no buffering)
+            # For BPE, we'll use iterative buffering
+            target_vocab_size = max_tokens
+            self.logger.info(f"Training new tokenizer from base using corpus...")
+            temp_tokenizer = expanded_tokenizer.train_new_from_iterator(
+                get_training_corpus(),
+                target_vocab_size
+            )
+
+            # Get JSON to determine model type
+            temp_json = json.loads(temp_tokenizer.backend_tokenizer.to_str())
+            model_type = temp_json['model']['type']
             
-            processed_tokens = self.process_tokens_for_model(learned_tokens, algorithm_name)
-            
-            if len(processed_tokens) > max_tokens:
-                processed_tokens = processed_tokens[:max_tokens]
-                self.logger.info(f"Limited to {max_tokens} tokens")
-            
-            self.logger.info(f"Adding {len(processed_tokens)} processed tokens...")
-            
-            if processed_tokens:
-                # Filter out tokens that already exist in vocabulary
-                existing_vocab = set(original_vocab.keys())
-                new_tokens = [token for token in processed_tokens if token not in existing_vocab]
-                
-                if new_tokens:
-                    num_added = expanded_tokenizer.add_tokens(new_tokens)
-                    # REPLACE: # ... (logging statements) ... WITH:
-                    self.logger.info(f"✅ Successfully added {num_added} new tokens")
-                    self.logger.info(f"New vocabulary size: {len(expanded_tokenizer.get_vocab()):,}")
-                    self.logger.info(f"Sample new tokens: {new_tokens[:5]}{'...' if len(new_tokens) > 5 else ''}")
+            self.logger.info(f"Base tokenizer model type: {json.loads(expanded_tokenizer.backend_tokenizer.to_str())['model']['type']}")
+            self.logger.info(f"New tokenizer model type: {model_type}")
+
+            if model_type == 'BPE':
+                # Use iterative buffer approach for BPE (similar to train_with_target_size)
+                buffer_multipliers = [1.5, 2, 3, 4, 5, 8, 12] if vocab_buffer_multiplier is None else [vocab_buffer_multiplier]
+                tokens_added = 0  # Track success across loop iterations
+                success = False
+
+                for i, multiplier in enumerate(buffer_multipliers):
+                    buffered_tokens = int(max_tokens * multiplier)
+                    target_vocab_size = buffered_tokens
+                    is_last_buffer = (i == len(buffer_multipliers) - 1)
+                    self.logger.info(f"Trying {multiplier}x buffer: target vocab size = {target_vocab_size:,} "
+                                   f"({buffered_tokens} new tokens to select {max_tokens} best from)")
+
+                    self.logger.info(f"Training new tokenizer from base using corpus...")
+                    new_tokenizer = expanded_tokenizer.train_new_from_iterator(
+                        get_training_corpus(),
+                        target_vocab_size
+                    )
+
+                    # Get JSON representations of both tokenizers
+                    base_json = json.loads(expanded_tokenizer.backend_tokenizer.to_str())
+                    new_json = json.loads(new_tokenizer.backend_tokenizer.to_str())
                     
-                    # MODIFIED RETURN STATEMENT
-                    return expanded_tokenizer, num_added, processed_tokens
+                    # For BPE tokenizers: merge vocab and merges
+                    merged_vocab = base_json['model']['vocab'].copy()
+                    merged_merges = base_json['model']['merges'].copy()
+
+                    original_vocab_size = len(merged_vocab)
+                    original_merges_size = len(merged_merges)
+
+                    # Add new merges and their corresponding tokens
+                    tokens_added = 0
+                    merges_added = 0
+
+                    for merge in tqdm(new_json['model']['merges'], desc="Adding merges & tokens"):
+                        # Check limit
+                        if tokens_added >= max_tokens:
+                            self.logger.info(f"Reached max_tokens limit ({max_tokens}), stopping merge addition")
+                            break
+
+                        # Calculate the resulting token from this merge
+                        if isinstance(merge, list):
+                            # Merge is a list like ["token1", "token2"]
+                            parts = merge
+                            if len(parts) >= 2:
+                                resulting_token = parts[0] + parts[1]
+                            else:
+                                resulting_token = ''.join(parts) if parts else str(merge)
+                        elif isinstance(merge, str):
+                            # Merge is a string like "token1 token2"
+                            parts = merge.split(' ', 1)
+                            if len(parts) >= 2:
+                                resulting_token = parts[0] + parts[1]
+                            else:
+                                resulting_token = merge
+                        else:
+                            # For other types, convert to string
+                            resulting_token = str(merge)
+
+                        # Add merge
+                        if merge not in merged_merges:
+                            merged_merges.append(merge)
+                            merges_added += 1
+
+                        # Add the corresponding token if it's new
+                        if resulting_token not in merged_vocab:
+                            merged_vocab[resulting_token] = len(merged_vocab)
+                            tokens_added += 1
+
+                    # Check if we got enough tokens
+                    if tokens_added >= max_tokens:
+                        self.logger.info(f"✅ Buffer {multiplier}x successful: added {tokens_added} tokens via {merges_added} merges")
+                        self.logger.info(f"Original vocab: {original_vocab_size:,}, New vocab: {len(merged_vocab):,} (+{tokens_added})")
+                        self.logger.info(f"Original merges: {original_merges_size:,}, New merges: {len(merged_merges):,} (+{merges_added})")
+
+                        # Update JSON with merged vocab and merges
+                        new_json['model']['vocab'] = merged_vocab
+                        new_json['model']['merges'] = merged_merges
+
+                        # Reconstruct tokenizer from merged JSON
+                        expanded_tokenizer._tokenizer = expanded_tokenizer.backend_tokenizer.from_str(
+                            json.dumps(new_json)
+                        )
+
+                        # Success! Break out of buffer loop
+                        success = True
+                        break
+                    else:
+                        # If this is the last buffer, apply what we have and warn
+                        if is_last_buffer:
+                            self.logger.warning(f"⚠️  Could not reach target of {max_tokens} tokens even with largest buffer ({multiplier}x). "
+                                              f"Adding {tokens_added} tokens (best available). "
+                                              f"The corpus may be too small or not diverse enough.")
+                            self.logger.info(f"Applied {multiplier}x buffer result: added {tokens_added} tokens via {merges_added} merges")
+                            self.logger.info(f"Original vocab: {original_vocab_size:,}, New vocab: {len(merged_vocab):,} (+{tokens_added})")
+                            self.logger.info(f"Original merges: {original_merges_size:,}, New merges: {len(merged_merges):,} (+{merges_added})")
+
+                            # Update JSON with merged vocab and merges
+                            new_json['model']['vocab'] = merged_vocab
+                            new_json['model']['merges'] = merged_merges
+
+                            # Reconstruct tokenizer from merged JSON
+                            expanded_tokenizer._tokenizer = expanded_tokenizer.backend_tokenizer.from_str(
+                                json.dumps(new_json)
+                            )
+                            success = True
+                            break
+                        else:
+                            self.logger.info(f"❌ Buffer {multiplier}x insufficient: only {tokens_added} tokens (need {max_tokens}), trying next buffer...")
+                            continue
+
+                # After buffer loop: if we didn't succeed and didn't apply last buffer, something went wrong
+                if not success and tokens_added == 0:
+                    raise Exception(f"Failed to add any new tokens. The corpus may be too small or not diverse enough.")
+
+            elif model_type == 'Unigram':
+                # For SentencePiece/Unigram tokenizers: merge vocab only (no merges)
+                # No buffering for Unigram - use the temp_tokenizer we already trained
+                base_json = json.loads(expanded_tokenizer.backend_tokenizer.to_str())
+                new_json = json.loads(temp_tokenizer.backend_tokenizer.to_str())
+                
+                base_vocab = base_json['model']['vocab']
+                new_vocab = new_json['model']['vocab']
+
+                # Calculate default score for new tokens (low probability for unknown tokens)
+                base_scores = [score for score in base_vocab.values() if isinstance(score, (int, float))]
+                if base_scores:
+                    min_base_score = min(base_scores)
+                    # Use a score slightly lower than the minimum to indicate new, rare tokens
+                    default_score = min_base_score - 1.0
+                    self.logger.info(f"Using default score {default_score:.2f} for new tokens (min base score: {min_base_score:.2f})")
                 else:
-                    self.logger.warning("⚠️ All processed tokens already exist in vocabulary")
-                    return self.original_tokenizer, 0, processed_tokens
+                    # Fallback if no scores found (unlikely but safe)
+                    default_score = -10.0
+
+                # Identify truly new tokens
+                new_tokens_dict = {token: score for token, score in new_vocab.items()
+                                   if token not in base_vocab}
+
+                self.logger.info(f"Found {len(new_tokens_dict)} new tokens")
+                self.logger.info(f"Enforcing max_tokens={max_tokens} limit (keeping highest scoring tokens)")
+                # Sort new tokens by score (descending - higher scores are better in Unigram)
+                sorted_new_tokens = sorted(new_tokens_dict.items(), key=lambda x: x[1], reverse=True)
+                # Limit to max_tokens
+                tokens_to_add = sorted_new_tokens[:max_tokens]
+
+                # Merge vocabularies
+                self.logger.info("Merging Unigram vocabularies...")
+                merged_vocab = base_vocab.copy()
+                tokens_added = 0
+                for token, score in tqdm(tokens_to_add, desc="Adding tokens"):
+                    if token not in merged_vocab:
+                        # Preserve the score from new tokenizer if valid, otherwise use default low score
+                        if isinstance(score, (int, float)):
+                            merged_vocab[token] = score
+                        else:
+                            merged_vocab[token] = default_score
+                        tokens_added += 1
+
+                original_vocab_size = len(base_vocab)
+                self.logger.info(f"Original vocab: {original_vocab_size:,}, New vocab: {len(merged_vocab):,} (+{tokens_added})")
+                
+                # Check if we reached the target
+                if tokens_added < max_tokens:
+                    self.logger.warning(f"⚠️  Could not reach target of {max_tokens} tokens. Added {tokens_added} tokens (all available new tokens). "
+                                      f"The corpus may be too small or not diverse enough to generate {max_tokens} unique tokens.")
+                else:
+                    self.logger.info(f"✅ Enforced max_tokens={max_tokens}: added {tokens_added} highest-scoring tokens")
+
+                # Update JSON with merged vocab
+                new_json['model']['vocab'] = merged_vocab
+
+                # Reconstruct tokenizer from merged JSON
+                expanded_tokenizer._tokenizer = expanded_tokenizer.backend_tokenizer.from_str(
+                    json.dumps(new_json)
+                )
+
             else:
-                self.logger.warning("❌ No tokens to add")
-                # MODIFIED RETURN STATEMENT
-                return self.original_tokenizer, 0, []
+                raise ValueError(f"Unsupported tokenizer model type: {model_type}. Only BPE and Unigram are supported.")
+
+            # Get list of newly added tokens for return value
+            # Calculate actual tokens added based on final vocabulary difference
+            final_vocab = expanded_tokenizer.get_vocab()
+            new_vocab_set = set(final_vocab.keys())
+            original_vocab_set = set(original_vocab.keys())
+            newly_added_tokens_list = list(new_vocab_set - original_vocab_set)
+            actual_tokens_added = len(newly_added_tokens_list)
+
+            self.logger.info(f"✅ Successfully expanded vocabulary using train_new_from_iterator")
+            self.logger.info(f"Original vocabulary size: {len(original_vocab):,}")
+            self.logger.info(f"New vocabulary size: {len(final_vocab):,}")
+            self.logger.info(f"Actual tokens added: {actual_tokens_added:,}")
+            if newly_added_tokens_list:
+                self.logger.info(f"Sample new tokens: {newly_added_tokens_list[:10]}{'...' if len(newly_added_tokens_list) > 10 else ''}")
+
+            return expanded_tokenizer, actual_tokens_added, newly_added_tokens_list
 
 class LlamaProcessor(BaseProcessor):
     """
